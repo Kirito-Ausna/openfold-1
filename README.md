@@ -23,10 +23,12 @@ or `bfloat16` half-precision.
 
 ## Installation (Linux)
 
-All Python dependencies are specified in `environment.yml`. For producing sequence 
-alignments, you'll also need `kalign`, the [HH-suite](https://github.com/soedinglab/hh-suite), 
-and one of {`jackhmmer`, [MMseqs2](https://github.com/soedinglab/mmseqs2) (nightly build)} 
-installed on on your system. Finally, some download scripts require `aria2c`.
+Python dependencies available through `pip` are provided in `requirements.txt`. 
+OpenFold depends on `openmm==7.5.1` and `pdbfixer`, which are only available 
+via `conda`. For producing sequence alignments, you'll also need
+`kalign`, the [HH-suite](https://github.com/soedinglab/hh-suite), and one of 
+{`jackhmmer`, [MMseqs2](https://github.com/soedinglab/mmseqs2)} installed on
+on your system. Finally, some download scripts require `aria2c`.
 
 For convenience, we provide a script that installs Miniconda locally, creates a 
 `conda` virtual environment, installs all Python dependencies, and downloads
@@ -59,7 +61,7 @@ To install the HH-suite to `/usr/bin`, run
 To download DeepMind's pretrained parameters and common ground truth data, run:
 
 ```bash
-bash scripts/download_data.sh data/
+scripts/download_data.sh data/
 ```
 
 You have two choices for downloading protein databases, depending on whether 
@@ -68,14 +70,14 @@ you want to use DeepMind's MSA generation pipeline (w/ HMMR & HHblits) or
 MMseqs2 instead. For the former, run:
 
 ```bash
-bash scripts/download_alphafold_dbs.sh data/
+scripts/download_alphafold_databases.sh data/
 ```
 
 For the latter, run:
 
 ```bash
-bash scripts/download_mmseqs_dbs.sh data/    # downloads .tar files
-bash scripts/prep_mmseqs_dbs.sh data/        # unpacks and preps the databases
+scripts/download_mmseqs_databases.sh data/    # downloads .tar files
+scripts/prep_mmseqs_databases.sh data/        # unpacks and preps the databases
 ```
 
 Make sure to run the latter command on the machine that will be used for MSA
@@ -84,7 +86,7 @@ MMseqs2 should be split according to the memory available on the system).
 
 Alternatively, you can use raw MSAs from 
 [ProteinNet](https://github.com/aqlaboratory/proteinnet). After downloading
-the database, use `scripts/prep_proteinnet_msas.py` to convert the data into
+the database, use `scripts/prepare_proteinnet_msas.py` to convert the data into
 a format recognized by the OpenFold parser. The resulting directory becomes the
 `alignment_dir` used in subsequent steps. Use `scripts/unpack_proteinnet.py` to
 extract `.core` files from ProteinNet text files.
@@ -103,11 +105,11 @@ pretrained parameters, run e.g.:
 ```bash
 python3 run_pretrained_openfold.py \
     target.fasta \
+    data/uniref90/uniref90.fasta \
+    data/mgnify/mgy_clusters_2018_12.fa \
+    data/pdb70/pdb70 \
     data/pdb_mmcif/mmcif_files/ \
-    --uniref90_database_path data/uniref90/uniref90.fasta \
-    --mgnify_database_path data/mgnify/mgy_clusters_2018_12.fa \
-    --pdb70_database_path data/pdb70/pdb70 \
-    --uniclust30_database_path data/uniclust30/uniclust30_2018_08/uniclust30_2018_08 \
+    data/uniclust30/uniclust30_2018_08/uniclust30_2018_08 \
     --output_dir ./ \
     --bfd_database_path data/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt \
     --model_device cuda:1 \
@@ -121,11 +123,7 @@ where `data` is the same directory as in the previous step. If `jackhmmer`,
 `hhblits`, `hhsearch` and `kalign` are available at the default path of 
 `/usr/bin`, their `binary_path` command-line arguments can be dropped.
 If you've already computed alignments for the query, you have the option to 
-skip the expensive alignment computation here.
-
-Note that chunking (as defined in section 1.11.8 of the AlphaFold 2 supplement)
-is enabled by default in inference mode. To disable it, set `globals.chunk_size`
-to `None` in the config.
+circumvent the expensive alignment computation here.
 
 ### Training
 
@@ -226,6 +224,10 @@ and supports the full range of training options that entails, including
 multi-node distributed training. For more information, consult PyTorch 
 Lightning documentation and the `--help` flag of the training script.
 
+Hardware permitting, you can train with `bfloat16` half-precision by passing
+`bf16` as the `--precision` option. If you're using DeepSpeed, make sure to
+enable `bfloat16` in the DeepSpeed config as well.
+
 Note that the data directory can also contain PDB files previously output by
 the model. These are treated as members of the self-distillation set and are
 subjected to distillation-set-only preprocessing steps.
@@ -250,63 +252,13 @@ environment. These run components of AlphaFold and OpenFold side by side and
 ensure that output activations are adequately similar. For most modules, we
 target a maximum pointwise difference of `1e-4`.
 
-## Building and using the docker container
-
-### Building the docker image
-
-Openfold can be built as a docker container using the included dockerfile. To build it, run the following command from the root of this repository:
-
-```bash
-docker build -t openfold .
-```
-
-### Running the docker container 
-
-The built container contains both `run_pretrained_openfold.py` and `train_openfold.py` as well as all necessary software dependencies. It does not contain the model parameters, sequence, or structural databases. These should be downloaded to the host machine following the instructions in the Usage section above. 
-
-The docker container installs all conda components to the base conda environment in `/opt/conda`, and installs openfold itself in `/opt/openfold`,
-
-Before running the docker container, you can verify that your docker installation is able to properly communicate with your GPU by running the following command:
-
-
-```bash
-docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-```
-
-Note the `--gpus all` option passed to `docker run`. This option is necessary in order for the container to use the GPUs on the host machine.
-
-To run the inference code under docker, you can use a command like the one below.  In this example, parameters and sequences from the alphafold dataset are being used and are located at `/mnt/alphafold_database` on the host machine, and the input files are located in the current working directory. You can adjust the volume mount locations as needed to reflect the locations of your data. 
-
-```bash
-docker run \
---gpus all \
--v $PWD/:/data \
--v /mnt/alphafold_database/:/database \
--ti openfold:latest \
-python3 /opt/openfold/run_pretrained_openfold.py \
-/data/input.fasta \
-/database/pdb_mmcif/mmcif_files/ \
---uniref90_database_path /database/uniref90/uniref90.fasta \
---mgnify_database_path /database/mgnify/mgy_clusters_2018_12.fa \
---pdb70_database_path /database/pdb70/pdb70 \
---uniclust30_database_path /database/uniclust30/uniclust30_2018_08/uniclust30_2018_08 \
---output_dir /data \
---bfd_database_path /database/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt \
---model_device cuda:0 \
---jackhmmer_binary_path /opt/conda/bin/jackhmmer \
---hhblits_binary_path /opt/conda/bin/hhblits \
---hhsearch_binary_path /opt/conda/bin/hhsearch \
---kalign_binary_path /opt/conda/bin/kalign \
---param_path /database/params/params_model_1.npz
-```
-
 ## Copyright notice
 
 While AlphaFold's and, by extension, OpenFold's source code is licensed under
 the permissive Apache Licence, Version 2.0, DeepMind's pretrained parameters 
-fall under the CC BY 4.0 license, a copy of which is downloaded to 
-`openfold/resources/params` by the installation script. Note that the latter
-replaces the original, more restrictive CC BY-NC 4.0 license as of January 2022.
+remain under the more restrictive CC BY-NC 4.0 license, a copy of which is 
+downloaded to `openfold/resources/params` by the installation script. They are
+thereby made unavailable for commercial use.
 
 ## Contributing
 

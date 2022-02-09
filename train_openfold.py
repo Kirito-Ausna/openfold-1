@@ -1,8 +1,9 @@
 import argparse
 import logging
 import os
+# import pdb
 
-#os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 #os.environ["MASTER_ADDR"]="10.119.81.14"
 #os.environ["MASTER_PORT"]="42069"
 #os.environ["NODE_RANK"]="0"
@@ -15,7 +16,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks.lr_monitor import LearningRateMonitor
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.plugins.training_type import DeepSpeedPlugin, DDPPlugin
+from pytorch_lightning.plugins.training_type import DeepSpeedPlugin,DDPPlugin
 from pytorch_lightning.plugins.environments import SLURMEnvironment
 import torch
 
@@ -202,7 +203,7 @@ class OpenFoldWrapper(pl.LightningModule):
 
     def configure_optimizers(self, 
         learning_rate: float = 1e-3,
-        eps: float = 1e-5,
+        eps: float = 1e-8
     ) -> torch.optim.Adam:
         # Ignored as long as a DeepSpeed optimizer is configured
         return torch.optim.Adam(
@@ -211,8 +212,6 @@ class OpenFoldWrapper(pl.LightningModule):
             eps=eps
         )
 
-    def on_load_checkpoint(self, checkpoint):
-        self.ema.load_state_dict(checkpoint["ema"])
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["ema"] = self.ema.state_dict()
@@ -223,9 +222,9 @@ def main(args):
         seed_everything(args.seed) 
 
     config = model_config(
-        "initial_training", 
+        "model_1", 
         train=True, 
-        low_prec=(args.precision == "16")
+        low_prec=(args.precision == 16)
     ) 
     
     model_module = OpenFoldWrapper(config)
@@ -236,39 +235,40 @@ def main(args):
         logging.info("Successfully loaded model weights...")
 
     # TorchScript components of the model
-    if(args.script_modules):
-        script_preset_(model_module)
+    script_preset_(model_module)
 
-    #data_module = DummyDataLoader("new_batch.pickle")
+    #data_module = DummyDataLoader("batch.pickle")
     data_module = OpenFoldDataModule(
         config=config.data, 
         batch_seed=args.seed,
         **vars(args)
     )
-
+    
     data_module.prepare_data()
     data_module.setup()
-    
+
     callbacks = []
-    if(args.checkpoint_every_epoch):
+    if(args.checkpoint_best_val):
+        checkpoint_dir = os.path.join(args.output_dir, "checkpoints")
         mc = ModelCheckpoint(
-            every_n_epochs=1,
+            dirpath=checkpoint_dir,
+            filename="openfold_{epoch}_{step}_{val_loss:.2f}",
+            monitor="val_loss",
         )
         callbacks.append(mc)
 
     if(args.early_stopping):
         es = EarlyStoppingVerbose(
-            monitor="val/lddt_ca",
+            monitor="val_loss",
             min_delta=args.min_delta,
             patience=args.patience,
             verbose=False,
-            mode="max",
+            mode="min",
             check_finite=True,
             strict=True,
         )
         callbacks.append(es)
-
-    if(args.log_performance):
+    if args.log_performance:
         global_batch_size = args.num_nodes * args.gpus
         perf = PerformanceLoggingCallback(
             log_file=os.path.join(args.output_dir, "performance_log.json"),
@@ -292,23 +292,27 @@ def main(args):
         loggers.append(wdb_logger)
 
     if(args.deepspeed_config_path is not None):
+        if "SLURM_JOB_ID" in os.environ:
+            cluster_environment = SLURMEnvironment()
+        else:
+            cluster_environment = None
         strategy = DeepSpeedPlugin(
             config=args.deepspeed_config_path,
+            cluster_environment=cluster_environment,
         )
-        if(args.wandb):
-            wdb_logger.experiment.save(args.deepspeed_config_path)
-            wdb_logger.experiment.save("openfold/config.py")
-    elif (args.gpus is not None and args.gpus > 1) or args.num_nodes > 1:
-        strategy = DDPPlugin(find_unused_parameters=False)
+    elif (args.gpus is not None and args.gpus > 1) or args.num_nodes > 1 :
+        strategy = "ddp"
+        # logging.info(args.gpus)
     else:
+        # print(args.gpus)
+        # logging.info(f"There is {args.gpus} GPUS")
+        # raise ValueError(f"There is {args.gpus} GPUS, But not used")
         strategy = None
    
     trainer = pl.Trainer.from_argparse_args(
         args,
-        default_root_dir=args.output_dir,
         strategy=strategy,
         callbacks=callbacks,
-        logger=loggers,
     )
 
     if(args.resume_model_weights_only):
@@ -320,6 +324,10 @@ def main(args):
         model_module, 
         datamodule=data_module,
         ckpt_path=ckpt_path,
+    )
+
+    trainer.save_checkpoint(
+        os.path.join(args.output_dir, "checkpoints", "final.ckpt")
     )
 
 
@@ -365,6 +373,10 @@ if __name__ == "__main__":
         "--distillation_alignment_dir", type=str, default=None,
         help="Directory containing precomputed distillation alignments"
     )
+    # parser.add_argument(
+    #     "--gpus", type=int, default=1,
+    #     help="Number of gpus for training Manifold"
+    # )
     parser.add_argument(
         "--val_data_dir", type=str, default=None,
         help="Directory containing validation mmCIF files"
@@ -388,11 +400,6 @@ if __name__ == "__main__":
         help="""See --train_mapping_path"""
     )
     parser.add_argument(
-        "--obsolete_pdbs_file_path", type=str, default=None,
-        help="""Path to obsolete.dat file containing list of obsolete PDBs and 
-             their replacements."""
-    )
-    parser.add_argument(
         "--template_release_dates_cache_path", type=str, default=None,
         help="""Output of scripts/generate_mmcif_cache.py run on template mmCIF
                 files."""
@@ -410,8 +417,9 @@ if __name__ == "__main__":
         help="Path to DeepSpeed config. If not provided, DeepSpeed is disabled"
     )
     parser.add_argument(
-        "--checkpoint_every_epoch", action="store_true", default=False,
-        help="""Whether to checkpoint at the end of every training epoch"""
+        "--checkpoint_best_val", type=bool_type, default=True,
+        help="""Whether to save the model parameters that perform best during
+                validation"""
     )
     parser.add_argument(
         "--early_stopping", type=bool_type, default=False,
@@ -435,7 +443,7 @@ if __name__ == "__main__":
         help="Whether to load just model weights as opposed to training state"
     )
     parser.add_argument(
-        "--log_performance", type=bool_type, default=False,
+        "--log_performance", action='store_true',
         help="Measure performance"
     )
     parser.add_argument(
@@ -488,7 +496,7 @@ if __name__ == "__main__":
             "--reload_dataloaders_every_epoch",
             "--reload_dataloaders_every_n_epochs",
         ]
-    ) 
+    )
 
     args = parser.parse_args()
 
@@ -497,7 +505,8 @@ if __name__ == "__main__":
          (args.num_nodes is not None and args.num_nodes > 1))):
         raise ValueError("For distributed training, --seed must be specified")
 
-    # This re-applies the training-time filters at the beginning of every epoch
+    # pdb.set_trace()
+    # args.gpus=1
+    
     args.reload_dataloaders_every_n_epochs = 1
-
     main(args)

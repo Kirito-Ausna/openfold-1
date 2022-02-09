@@ -17,17 +17,3 @@ consts = mlc.ConfigDict(
         "c_e": 64,
     }
 )
-
-config = mlc.ConfigDict(
-    {
-        "data": {
-            "common": {
-                "masked_msa": {
-                    "profile_prob": 0.1,
-                    "same_prob": 0.1,
-                    "uniform_prob": 0.1,
-                },
-            }
-        }
-    }
-)

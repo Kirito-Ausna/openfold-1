@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import itertools
-from functools import reduce, wraps
+from functools import reduce
 from operator import add
 
 import numpy as np
@@ -22,7 +22,7 @@ import torch
 
 from openfold.config import NUM_RES, NUM_EXTRA_SEQ, NUM_TEMPLATES, NUM_MSA_SEQ
 from openfold.np import residue_constants as rc
-from openfold.utils.rigid_utils import Rotation, Rigid
+from openfold.utils.affine_utils import T
 from openfold.utils.tensor_utils import (
     tree_map,
     tensor_tree_map,
@@ -71,7 +71,7 @@ def make_template_mask(protein):
 
 def curry1(f):
     """Supply all arguments but the first."""
-    @wraps(f)
+
     def fc(*args, **kwargs):
         return lambda x: f(x, *args, **kwargs)
 
@@ -145,10 +145,7 @@ def squeeze_features(protein):
         if k in protein:
             final_dim = protein[k].shape[-1]
             if isinstance(final_dim, int) and final_dim == 1:
-                if torch.is_tensor(protein[k]):
-                    protein[k] = torch.squeeze(protein[k], dim=-1)
-                else:
-                    protein[k] = np.squeeze(protein[k], axis=-1)
+                protein[k] = torch.squeeze(protein[k], dim=-1)
 
     for k in ["seq_length", "num_alignments"]:
         if k in protein:
@@ -165,9 +162,7 @@ def randomly_replace_msa_with_unknown(protein, replace_proportion):
     gap_idx = 21
     msa_mask = torch.logical_and(msa_mask, protein["msa"] != gap_idx)
     protein["msa"] = torch.where(
-        msa_mask,
-        torch.ones_like(protein["msa"]) * x_idx,
-        protein["msa"]
+        msa_mask, torch.ones_like(protein["msa"]) * x_idx, protein["msa"]
     )
     aatype_mask = torch.rand(protein["aatype"].shape) < replace_proportion
 
@@ -203,11 +198,6 @@ def sample_msa(protein, max_seq, keep_extra, seed=None):
 
     return protein
 
-
-@curry1
-def add_distillation_flag(protein, distillation):
-    protein['is_distillation'] = distillation
-    return protein
 
 @curry1
 def sample_msa_distillation(protein, max_seq):
@@ -359,7 +349,7 @@ def make_msa_mask(protein):
     """Mask features are all ones, but will later be zero-padded."""
     protein["msa_mask"] = torch.ones(protein["msa"].shape, dtype=torch.float32)
     protein["msa_row_mask"] = torch.ones(
-        (protein["msa"].shape[0]), dtype=torch.float32
+        protein["msa"].shape[0], dtype=torch.float32
     )
     return protein
 
@@ -612,18 +602,17 @@ def make_atom14_masks(protein):
         dtype=torch.float32,
         device=protein["aatype"].device,
     )
-    protein_aatype = protein['aatype'].to(torch.long)
 
     # create the mapping for (residx, atom14) --> atom37, i.e. an array
     # with shape (num_res, 14) containing the atom37 indices for this protein
-    residx_atom14_to_atom37 = restype_atom14_to_atom37[protein_aatype]
-    residx_atom14_mask = restype_atom14_mask[protein_aatype]
+    residx_atom14_to_atom37 = restype_atom14_to_atom37[protein["aatype"]]
+    residx_atom14_mask = restype_atom14_mask[protein["aatype"]]
 
     protein["atom14_atom_exists"] = residx_atom14_mask
     protein["residx_atom14_to_atom37"] = residx_atom14_to_atom37.long()
 
     # create the gather indices for mapping back
-    residx_atom37_to_atom14 = restype_atom37_to_atom14[protein_aatype]
+    residx_atom37_to_atom14 = restype_atom37_to_atom14[protein["aatype"]]
     protein["residx_atom37_to_atom14"] = residx_atom37_to_atom14.long()
 
     # create the corresponding mask
@@ -637,7 +626,7 @@ def make_atom14_masks(protein):
             atom_type = rc.atom_order[atom_name]
             restype_atom37_mask[restype, atom_type] = 1
 
-    residx_atom37_mask = restype_atom37_mask[protein_aatype]
+    residx_atom37_mask = restype_atom37_mask[protein["aatype"]]
     protein["atom37_atom_exists"] = residx_atom37_mask
 
     return protein
@@ -752,7 +741,7 @@ def make_atom14_positions(protein):
     return protein
 
 
-def atom37_to_frames(protein, eps=1e-8):
+def atom37_to_frames(protein):
     aatype = protein["aatype"]
     all_atom_positions = protein["all_atom_positions"]
     all_atom_mask = protein["all_atom_mask"]
@@ -810,11 +799,11 @@ def atom37_to_frames(protein, eps=1e-8):
         no_batch_dims=len(all_atom_positions.shape[:-2]),
     )
 
-    gt_frames = Rigid.from_3_points(
+    gt_frames = T.from_3_points(
         p_neg_x_axis=base_atom_pos[..., 0, :],
         origin=base_atom_pos[..., 1, :],
         p_xy_plane=base_atom_pos[..., 2, :],
-        eps=eps,
+        eps=1e-8,
     )
 
     group_exists = batched_gather(
@@ -836,9 +825,8 @@ def atom37_to_frames(protein, eps=1e-8):
     rots = torch.tile(rots, (*((1,) * batch_dims), 8, 1, 1))
     rots[..., 0, 0, 0] = -1
     rots[..., 0, 2, 2] = -1
-    rots = Rotation(rot_mats=rots)
 
-    gt_frames = gt_frames.compose(Rigid(rots, None))
+    gt_frames = gt_frames.compose(T(rots, None))
 
     restype_rigidgroup_is_ambiguous = all_atom_mask.new_zeros(
         *((1,) * batch_dims), 21, 8
@@ -872,15 +860,10 @@ def atom37_to_frames(protein, eps=1e-8):
         no_batch_dims=batch_dims,
     )
 
-    residx_rigidgroup_ambiguity_rot = Rotation(
-        rot_mats=residx_rigidgroup_ambiguity_rot
-    )
-    alt_gt_frames = gt_frames.compose(
-        Rigid(residx_rigidgroup_ambiguity_rot, None)
-    )
+    alt_gt_frames = gt_frames.compose(T(residx_rigidgroup_ambiguity_rot, None))
 
-    gt_frames_tensor = gt_frames.to_tensor_4x4()
-    alt_gt_frames_tensor = alt_gt_frames.to_tensor_4x4()
+    gt_frames_tensor = gt_frames.to_4x4()
+    alt_gt_frames_tensor = alt_gt_frames.to_4x4()
 
     protein["rigidgroups_gt_frames"] = gt_frames_tensor
     protein["rigidgroups_gt_exists"] = gt_exists
@@ -1034,7 +1017,7 @@ def atom37_to_torsion_angles(
         dim=-1,
     )
 
-    torsion_frames = Rigid.from_3_points(
+    torsion_frames = T.from_3_points(
         torsions_atom_pos[..., 1, :],
         torsions_atom_pos[..., 2, :],
         torsions_atom_pos[..., 0, :],
@@ -1088,11 +1071,11 @@ def atom37_to_torsion_angles(
 
 
 def get_backbone_frames(protein):
-    # DISCREPANCY: AlphaFold uses tensor_7s here. I don't know why.
-    protein["backbone_rigid_tensor"] = protein["rigidgroups_gt_frames"][
+    # TODO: Verify that this is correct
+    protein["backbone_affine_tensor"] = protein["rigidgroups_gt_frames"][
         ..., 0, :, :
     ]
-    protein["backbone_rigid_mask"] = protein["rigidgroups_gt_exists"][..., 0]
+    protein["backbone_affine_mask"] = protein["rigidgroups_gt_exists"][..., 0]
 
     return protein
 

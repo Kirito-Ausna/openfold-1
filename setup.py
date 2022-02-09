@@ -17,15 +17,13 @@ from setuptools import setup
 
 setup(
     name='openfold',
-    version='0.1.0',
+    version='1.0.0',
     description='A PyTorch reimplementation of DeepMind\'s AlphaFold 2',
     author='Gustaf Ahdritz & DeepMind',
     author_email='gahdritz@gmail.com',
     license='Apache License, Version 2.0',
     url='https://github.com/aqlaboratory/openfold',
     packages=find_packages(exclude=["tests", "scripts"]),
-    include_package_data=True,
-    package_data={"": ["resources/stereo_chemical_props.txt"]},
     install_requires=[
         'torch',
         'deepspeed',

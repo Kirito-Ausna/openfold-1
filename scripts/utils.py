@@ -4,19 +4,25 @@ from datetime import date
 
 def add_data_args(parser: argparse.ArgumentParser):
     parser.add_argument(
-        '--uniref90_database_path', type=str, default=None,
+        'uniref90_database_path', type=str, 
     )
     parser.add_argument(
-        '--mgnify_database_path', type=str, default=None,
+        'mgnify_database_path', type=str, 
     )
     parser.add_argument(
-        '--pdb70_database_path', type=str, default=None,
+        'pdb70_database_path', type=str,
     )
     parser.add_argument(
-        '--uniclust30_database_path', type=str, default=None,
+        'template_mmcif_dir', type=str,
+    )
+    parser.add_argument(
+        'uniclust30_database_path', type=str,
     )
     parser.add_argument(
         '--bfd_database_path', type=str, default=None,
+    )
+    parser.add_argument(
+        '--small_bfd_database_path', type=str, default=None
     )
     parser.add_argument(
         '--jackhmmer_binary_path', type=str, default='/usr/bin/jackhmmer'
@@ -36,7 +42,4 @@ def add_data_args(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         '--obsolete_pdbs_path', type=str, default=None
-    )
-    parser.add_argument(
-        '--release_dates_path', type=str, default=None
     )
