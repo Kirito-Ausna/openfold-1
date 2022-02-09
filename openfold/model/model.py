@@ -134,7 +134,7 @@ class AlphaFold(nn.Module):
                 inf=self.config.template.inf,
                 eps=self.config.template.eps,
                 **self.config.template.distogram,
-            ).to(z.dtype)
+            )
             t = self.template_pair_embedder(t)
 
             single_template_embeds.update({"pair": t})
@@ -149,7 +149,7 @@ class AlphaFold(nn.Module):
         # [*, S_t, N, N, C_z]
         t = self.template_pair_stack(
             template_embeds["pair"], 
-            pair_mask.unsqueeze(-3).to(dtype=z.dtype), 
+            pair_mask.unsqueeze(-3), 
             chunk_size=self.globals.chunk_size,
             _mask_trans=self.config._mask_trans,
         )
@@ -158,7 +158,7 @@ class AlphaFold(nn.Module):
         t = self.template_pointwise_att(
             t, 
             z, 
-            template_mask=batch["template_mask"].to(dtype=z.dtype),
+            template_mask=batch["template_mask"],
             chunk_size=self.globals.chunk_size,
         )
         t = t * (torch.sum(batch["template_mask"]) > 0)
@@ -174,12 +174,6 @@ class AlphaFold(nn.Module):
     def iteration(self, feats, m_1_prev, z_prev, x_prev, _recycle=True):
         # Primary output dictionary
         outputs = {}
-
-        # This needs to be done manually for DeepSpeed's sake
-        dtype = next(self.parameters()).dtype
-        for k in feats:
-            if(feats[k].dtype == torch.float32):
-                feats[k] = feats[k].to(dtype=dtype)
 
         # Grab some data about the input
         batch_dims = feats["target_feat"].shape[:-2]
@@ -203,83 +197,74 @@ class AlphaFold(nn.Module):
             feats["msa_feat"],
         )
 
-        # Initialize the recycling embeddings, if needs be
-        if None in [m_1_prev, z_prev, x_prev]:
-            # [*, N, C_m]
-            m_1_prev = m.new_zeros(
-                (*batch_dims, n, self.config.input_embedder.c_m),
-                requires_grad=False,
+        # Inject information from previous recycling iterations
+        if _recycle:
+            # Initialize the recycling embeddings, if needs be
+            if None in [m_1_prev, z_prev, x_prev]:
+                # [*, N, C_m]
+                m_1_prev = m.new_zeros(
+                    (*batch_dims, n, self.config.input_embedder.c_m),
+                )
+
+                # [*, N, N, C_z]
+                z_prev = z.new_zeros(
+                    (*batch_dims, n, n, self.config.input_embedder.c_z),
+                )
+
+                # [*, N, 3]
+                x_prev = z.new_zeros(
+                    (*batch_dims, n, residue_constants.atom_type_num, 3),
+                )
+
+            x_prev = pseudo_beta_fn(feats["aatype"], x_prev, None)
+
+            # m_1_prev_emb: [*, N, C_m]
+            # z_prev_emb: [*, N, N, C_z]
+            m_1_prev_emb, z_prev_emb = self.recycling_embedder(
+                m_1_prev,
+                z_prev,
+                x_prev,
             )
+
+            # [*, S_c, N, C_m]
+            m[..., 0, :, :] = m[..., 0, :, :] + m_1_prev_emb
 
             # [*, N, N, C_z]
-            z_prev = z.new_zeros(
-                (*batch_dims, n, n, self.config.input_embedder.c_z),
-                requires_grad=False,
-            )
+            z = z + z_prev_emb
 
-            # [*, N, 3]
-            x_prev = z.new_zeros(
-                (*batch_dims, n, residue_constants.atom_type_num, 3),
-                requires_grad=False,
-            )
-
-        x_prev = pseudo_beta_fn(
-            feats["aatype"], x_prev, None
-        ).to(dtype=z.dtype)
-
-        # m_1_prev_emb: [*, N, C_m]
-        # z_prev_emb: [*, N, N, C_z]
-        m_1_prev_emb, z_prev_emb = self.recycling_embedder(
-            m_1_prev,
-            z_prev,
-            x_prev,
-        )
-
-        # If the number of recycling iterations is 0, skip recycling
-        # altogether. We zero them this way instead of computing them
-        # conditionally to avoid leaving parameters unused, which has annoying
-        # implications for DDP training.
-        if(not _recycle):
-            m_1_prev_emb *= 0
-            z_prev_emb *= 0
-
-        # [*, S_c, N, C_m]
-        m[..., 0, :, :] += m_1_prev_emb
-
-        # [*, N, N, C_z]
-        z += z_prev_emb
-
-        # Possibly prevents memory fragmentation
-        del m_1_prev, z_prev, x_prev, m_1_prev_emb, z_prev_emb
+            # Possibly prevents memory fragmentation 
+            del m_1_prev, z_prev, x_prev, m_1_prev_emb, z_prev_emb
 
         # Embed the templates + merge with MSA/pair embeddings
         if self.config.template.enabled:
-            template_feats = {
-                k: v for k, v in feats.items() if k.startswith("template_")
-            }
-            template_embeds = self.embed_templates(
-                template_feats,
-                z,
-                pair_mask.to(dtype=z.dtype),
-                no_batch_dims,
-            )
-
-            # [*, N, N, C_z]
-            z = z + template_embeds["template_pair_embedding"]
-
-            if self.config.template.embed_angles:
-                # [*, S = S_c + S_t, N, C_m]
-                m = torch.cat(
-                    [m, template_embeds["template_angle_embedding"]], 
-                    dim=-3
+            template_mask = feats["template_mask"]
+            if(torch.any(template_mask)):
+                template_feats = {
+                    k: v for k, v in feats.items() if k.startswith("template_")
+                }
+                template_embeds = self.embed_templates(
+                    template_feats,
+                    z,
+                    pair_mask,
+                    no_batch_dims,
                 )
 
-                # [*, S, N]
-                torsion_angles_mask = feats["template_torsion_angles_mask"]
-                msa_mask = torch.cat(
-                    [feats["msa_mask"], torsion_angles_mask[..., 2]], 
-                    dim=-2
-                )
+                # [*, N, N, C_z]
+                z = z + template_embeds["template_pair_embedding"]
+
+                if self.config.template.embed_angles:
+                    # [*, S = S_c + S_t, N, C_m]
+                    m = torch.cat(
+                        [m, template_embeds["template_angle_embedding"]], 
+                        dim=-3
+                    )
+
+                    # [*, S, N]
+                    torsion_angles_mask = feats["template_torsion_angles_mask"]
+                    msa_mask = torch.cat(
+                        [feats["msa_mask"], torsion_angles_mask[..., 2]], 
+                        dim=-2
+                    )
 
         # Embed extra MSA features + merge with pairwise embeddings
         if self.config.extra_msa.enabled:
@@ -290,9 +275,9 @@ class AlphaFold(nn.Module):
             z = self.extra_msa_stack(
                 a,
                 z,
-                msa_mask=feats["extra_msa_mask"].to(dtype=a.dtype),
+                msa_mask=feats["extra_msa_mask"],
                 chunk_size=self.globals.chunk_size,
-                pair_mask=pair_mask.to(dtype=z.dtype),
+                pair_mask=pair_mask,
                 _mask_trans=self.config._mask_trans,
             )
 
@@ -303,8 +288,8 @@ class AlphaFold(nn.Module):
         m, z, s = self.evoformer(
             m,
             z,
-            msa_mask=msa_mask.to(dtype=m.dtype),
-            pair_mask=pair_mask.to(dtype=z.dtype),
+            msa_mask=msa_mask,
+            pair_mask=pair_mask,
             chunk_size=self.globals.chunk_size,
             _mask_trans=self.config._mask_trans,
         )
@@ -318,7 +303,7 @@ class AlphaFold(nn.Module):
             s,
             z,
             feats["aatype"],
-            mask=feats["seq_mask"].to(dtype=s.dtype),
+            mask=feats["seq_mask"],
         )
         outputs["final_atom_positions"] = atom14_to_atom37(
             outputs["sm"]["positions"][-1], feats
@@ -331,7 +316,7 @@ class AlphaFold(nn.Module):
         # [*, N, C_m]
         m_1_prev = m[..., 0, :, :]
 
-        # [*, N, N, C_z]
+        # [* N, N, C_z]
         z_prev = z
 
         # [*, N, 3]
@@ -342,9 +327,7 @@ class AlphaFold(nn.Module):
     def _disable_activation_checkpointing(self):
         self.template_pair_stack.blocks_per_ckpt = None
         self.evoformer.blocks_per_ckpt = None
-
-        for b in self.extra_msa_stack.blocks:
-            b.ckpt = False
+        self.extra_msa_stack.stack.blocks_per_ckpt = None
 
     def _enable_activation_checkpointing(self):
         self.template_pair_stack.blocks_per_ckpt = (
@@ -353,9 +336,9 @@ class AlphaFold(nn.Module):
         self.evoformer.blocks_per_ckpt = (
             self.config.evoformer_stack.blocks_per_ckpt
         )
-
-        for b in self.extra_msa_stack.blocks:
-            b.ckpt = self.config.extra_msa.extra_msa_stack.ckpt
+        self.extra_msa_stack.stack.blocks_per_ckpt = (
+            self.config.extra_msa.extra_msa_stack.blocks_per_ckpt
+        )
 
     def forward(self, batch):
         """
@@ -425,12 +408,11 @@ class AlphaFold(nn.Module):
             # Enable grad iff we're training and it's the final recycling layer
             is_final_iter = cycle_no == (num_iters - 1)
             with torch.set_grad_enabled(is_grad_enabled and is_final_iter):
+                # Sidestep AMP bug (PyTorch issue #65766)
                 if is_final_iter:
                     self._enable_activation_checkpointing()
-                    # Sidestep AMP bug (PyTorch issue #65766)
                     if torch.is_autocast_enabled():
                         torch.clear_autocast_cache()
-
                 # Run the next iteration of the model
                 outputs, m_1_prev, z_prev, x_prev = self.iteration(
                     feats,

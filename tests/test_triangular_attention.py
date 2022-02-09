@@ -70,7 +70,7 @@ class TestTriangularAttention(unittest.TestCase):
 
         n_res = consts.n_res
 
-        pair_act = np.random.rand(n_res, n_res, consts.c_z) * 100
+        pair_act = np.random.rand(n_res, n_res, consts.c_z)
         pair_mask = np.random.randint(low=0, high=2, size=(n_res, n_res))
 
         # Fetch pretrained parameters (but only from one block)]
@@ -85,9 +85,9 @@ class TestTriangularAttention(unittest.TestCase):
 
         model = compare_utils.get_global_pretrained_openfold()
         module = (
-            model.evoformer.blocks[0].core.tri_att_start
+            model.evoformer.blocks[0].tri_att_start
             if starting
-            else model.evoformer.blocks[0].core.tri_att_end
+            else model.evoformer.blocks[0].tri_att_end
         )
         out_repro = module(
             torch.as_tensor(pair_act, dtype=torch.float32).cuda(),
@@ -95,7 +95,7 @@ class TestTriangularAttention(unittest.TestCase):
             chunk_size=None,
         ).cpu()
 
-        self.assertTrue(torch.max(torch.abs(out_gt - out_repro)) < consts.eps)
+        self.assertTrue(torch.max(torch.abs(out_gt - out_repro) < consts.eps))
 
     @compare_utils.skip_unless_alphafold_installed()
     def test_tri_att_end_compare(self):

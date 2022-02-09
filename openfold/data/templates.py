@@ -503,13 +503,10 @@ def _get_atom_positions(
     mmcif_object: mmcif_parsing.MmcifObject,
     auth_chain_id: str,
     max_ca_ca_distance: float,
-    _zero_center_positions: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Gets atom positions and mask from a list of Biopython Residues."""
     coords_with_mask = mmcif_parsing.get_atom_coords(
-        mmcif_object=mmcif_object, 
-        chain_id=auth_chain_id,
-        _zero_center_positions=_zero_center_positions,
+        mmcif_object=mmcif_object, chain_id=auth_chain_id
     )
     all_atom_positions, all_atom_mask = coords_with_mask
     _check_residue_distances(
@@ -526,7 +523,6 @@ def _extract_template_features(
     query_sequence: str,
     template_chain_id: str,
     kalign_binary_path: str,
-    _zero_center_positions: bool = True,
 ) -> Tuple[Dict[str, Any], Optional[str]]:
     """Parses atom positions in the target structure and aligns with the query.
 
@@ -611,10 +607,7 @@ def _extract_template_features(
         # Essentially set to infinity - we don't want to reject templates unless
         # they're really really bad.
         all_atom_positions, all_atom_mask = _get_atom_positions(
-            mmcif_object, 
-            chain_id, 
-            max_ca_ca_distance=150.0, 
-            _zero_center_positions=_zero_center_positions,
+            mmcif_object, chain_id, max_ca_ca_distance=150.0
         )
     except (CaDistanceError, KeyError) as ex:
         raise NoAtomDataInTemplateError(
@@ -802,7 +795,6 @@ def _process_single_hit(
     obsolete_pdbs: Mapping[str, str],
     kalign_binary_path: str,
     strict_error_check: bool = False,
-    _zero_center_positions: bool = True,
 ) -> SingleHitResult:
     """Tries to extract template features from a single HHSearch hit."""
     # Fail hard if we can't get the PDB ID and chain name from the hit.
@@ -864,7 +856,6 @@ def _process_single_hit(
             query_sequence=query_sequence,
             template_chain_id=hit_chain_id,
             kalign_binary_path=kalign_binary_path,
-            _zero_center_positions=_zero_center_positions,
         )
         features["template_sum_probs"] = [hit.sum_probs]
 
@@ -922,17 +913,17 @@ class TemplateSearchResult:
 
 class TemplateHitFeaturizer:
     """A class for turning hhr hits to template features."""
+
     def __init__(
         self,
         mmcif_dir: str,
         max_template_date: str,
         max_hits: int,
         kalign_binary_path: str,
-        release_dates_path: Optional[str] = None,
-        obsolete_pdbs_path: Optional[str] = None,
+        release_dates_path: Optional[str],
+        obsolete_pdbs_path: Optional[str],
         strict_error_check: bool = False,
         _shuffle_top_k_prefiltered: Optional[int] = None,
-        _zero_center_positions: bool = True,
     ):
         """Initializes the Template Search.
 
@@ -991,7 +982,6 @@ class TemplateHitFeaturizer:
             self._obsolete_pdbs = {}
 
         self._shuffle_top_k_prefiltered = _shuffle_top_k_prefiltered
-        self._zero_center_positions = _zero_center_positions
 
     def get_templates(
         self,
@@ -1067,7 +1057,6 @@ class TemplateHitFeaturizer:
                 obsolete_pdbs=self._obsolete_pdbs,
                 strict_error_check=self._strict_error_check,
                 kalign_binary_path=self._kalign_binary_path,
-                _zero_center_positions=self._zero_center_positions,
             )
 
             if result.error:

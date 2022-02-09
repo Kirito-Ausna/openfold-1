@@ -18,18 +18,18 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple
 
-from openfold.model.primitives import Linear, LayerNorm, ipa_point_weights_init_
+from openfold.model.primitives import Linear, ipa_point_weights_init_
 from openfold.np.residue_constants import (
     restype_rigid_group_default_frame,
     restype_atom14_to_rigid_group,
     restype_atom14_mask,
     restype_atom14_rigid_group_positions,
 )
+from openfold.utils.affine_utils import T, quat_to_rot
 from openfold.utils.feats import (
     frames_and_literature_positions_to_atom14_pos,
     torsion_angles_to_frames,
 )
-from openfold.utils.rigid_utils import Rotation, Rigid
 from openfold.utils.tensor_utils import (
     dict_multimap,
     permute_final_dims,
@@ -225,7 +225,7 @@ class InvariantPointAttention(nn.Module):
         self,
         s: torch.Tensor,
         z: torch.Tensor,
-        r: Rigid,
+        t: T,
         mask: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -234,8 +234,8 @@ class InvariantPointAttention(nn.Module):
                 [*, N_res, C_s] single representation
             z:
                 [*, N_res, N_res, C_z] pair representation
-            r:
-                [*, N_res] transformation object
+            t:
+                [*, N_res] affine transformation object
             mask:
                 [*, N_res] mask
         Returns:
@@ -264,7 +264,7 @@ class InvariantPointAttention(nn.Module):
         # [*, N_res, H * P_q, 3]
         q_pts = torch.split(q_pts, q_pts.shape[-1] // 3, dim=-1)
         q_pts = torch.stack(q_pts, dim=-1)
-        q_pts = r[..., None].apply(q_pts)
+        q_pts = t[..., None].apply(q_pts)
 
         # [*, N_res, H, P_q, 3]
         q_pts = q_pts.view(
@@ -277,7 +277,7 @@ class InvariantPointAttention(nn.Module):
         # [*, N_res, H * (P_q + P_v), 3]
         kv_pts = torch.split(kv_pts, kv_pts.shape[-1] // 3, dim=-1)
         kv_pts = torch.stack(kv_pts, dim=-1)
-        kv_pts = r[..., None].apply(kv_pts)
+        kv_pts = t[..., None].apply(kv_pts)
 
         # [*, N_res, H, (P_q + P_v), 3]
         kv_pts = kv_pts.view(kv_pts.shape[:-2] + (self.no_heads, -1, 3))
@@ -298,8 +298,8 @@ class InvariantPointAttention(nn.Module):
             permute_final_dims(q, (1, 0, 2)),  # [*, H, N_res, C_hidden]
             permute_final_dims(k, (1, 2, 0)),  # [*, H, C_hidden, N_res]
         )
-        a *= math.sqrt(1.0 / (3 * self.c_hidden))
-        a += (math.sqrt(1.0 / 3) * permute_final_dims(b, (2, 0, 1)))
+        a = a * math.sqrt(1.0 / (3 * self.c_hidden))
+        a = a + (math.sqrt(1.0 / 3) * permute_final_dims(b, (2, 0, 1)))
 
         # [*, N_res, N_res, H, P_q, 3]
         pt_att = q_pts.unsqueeze(-4) - k_pts.unsqueeze(-5)
@@ -323,7 +323,7 @@ class InvariantPointAttention(nn.Module):
 
         # [*, H, N_res, N_res]
         pt_att = permute_final_dims(pt_att, (2, 0, 1))
-        a = a + pt_att 
+        a = a + pt_att
         a = a + square_mask.unsqueeze(-3)
         a = self.softmax(a)
 
@@ -331,9 +331,7 @@ class InvariantPointAttention(nn.Module):
         # Compute output
         ################
         # [*, N_res, H, C_hidden]
-        o = torch.matmul(
-            a, v.transpose(-2, -3).to(dtype=a.dtype)
-        ).transpose(-2, -3)
+        o = torch.matmul(a, v.transpose(-2, -3)).transpose(-2, -3)
 
         # [*, N_res, H * C_hidden]
         o = flatten_final_dims(o, 2)
@@ -351,7 +349,7 @@ class InvariantPointAttention(nn.Module):
 
         # [*, N_res, H, P_v, 3]
         o_pt = permute_final_dims(o_pt, (2, 0, 3, 1))
-        o_pt = r[..., None, None].invert_apply(o_pt)
+        o_pt = t[..., None, None].invert_apply(o_pt)
 
         # [*, N_res, H * P_v]
         o_pt_norm = flatten_final_dims(
@@ -362,7 +360,7 @@ class InvariantPointAttention(nn.Module):
         o_pt = o_pt.reshape(*o_pt.shape[:-3], -1, 3)
 
         # [*, N_res, H, C_z]
-        o_pair = torch.matmul(a.transpose(-2, -3), z.to(dtype=a.dtype))
+        o_pair = torch.matmul(a.transpose(-2, -3), z)
 
         # [*, N_res, H * C_z]
         o_pair = flatten_final_dims(o_pair, 2)
@@ -371,7 +369,7 @@ class InvariantPointAttention(nn.Module):
         s = self.linear_out(
             torch.cat(
                 (o, *torch.unbind(o_pt, dim=-1), o_pt_norm, o_pair), dim=-1
-            ).to(dtype=z.dtype)
+            )
         )
 
         return s
@@ -379,7 +377,7 @@ class InvariantPointAttention(nn.Module):
 
 class BackboneUpdate(nn.Module):
     """
-    Implements part of Algorithm 23.
+    Implements Algorithm 23.
     """
 
     def __init__(self, c_s):
@@ -394,17 +392,36 @@ class BackboneUpdate(nn.Module):
 
         self.linear = Linear(self.c_s, 6, init="final")
 
-    def forward(self, s: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, s):
         """
         Args:
             [*, N_res, C_s] single representation
         Returns:
-            [*, N_res, 6] update vector 
+            [*, N_res] affine transformation object
         """
         # [*, 6]
-        update = self.linear(s)
+        params = self.linear(s)
 
-        return update 
+        # [*, 3]
+        quats, trans = params[..., :3], params[..., 3:]
+
+        # [*]
+        # norm_denom = torch.sqrt(sum(torch.unbind(quats ** 2, dim=-1)) + 1)
+        norm_denom = torch.sqrt(torch.sum(quats ** 2, dim=-1) + 1)
+
+        # [*, 3]
+        ones = s.new_ones((1,) * len(quats.shape)).expand(
+            quats.shape[:-1] + (1,)
+        )
+
+        # [*, 4]
+        quats = torch.cat([ones, quats], dim=-1)
+        quats = quats / norm_denom[..., None]
+
+        # [*, 3, 3]
+        rots = quat_to_rot(quats)
+
+        return T(rots, trans)
 
 
 class StructureModuleTransitionLayer(nn.Module):
@@ -446,7 +463,7 @@ class StructureModuleTransition(nn.Module):
             self.layers.append(l)
 
         self.dropout = nn.Dropout(self.dropout_rate)
-        self.layer_norm = LayerNorm(self.c)
+        self.layer_norm = nn.LayerNorm(self.c)
 
     def forward(self, s):
         for l in self.layers:
@@ -536,8 +553,8 @@ class StructureModule(nn.Module):
         self.atom_mask = None
         self.lit_positions = None
 
-        self.layer_norm_s = LayerNorm(self.c_s)
-        self.layer_norm_z = LayerNorm(self.c_z)
+        self.layer_norm_s = nn.LayerNorm(self.c_s)
+        self.layer_norm_z = nn.LayerNorm(self.c_z)
 
         self.linear_in = Linear(self.c_s, self.c_s)
 
@@ -553,7 +570,7 @@ class StructureModule(nn.Module):
         )
 
         self.ipa_dropout = nn.Dropout(self.dropout_rate)
-        self.layer_norm_ipa = LayerNorm(self.c_s)
+        self.layer_norm_ipa = nn.LayerNorm(self.c_s)
 
         self.transition = StructureModuleTransition(
             self.c_s,
@@ -575,7 +592,7 @@ class StructureModule(nn.Module):
         self,
         s,
         z,
-        aatype,
+        f,
         mask=None,
     ):
         """
@@ -584,7 +601,7 @@ class StructureModule(nn.Module):
                 [*, N_res, C_s] single representation
             z:
                 [*, N_res, N_res, C_z] pair representation
-            aatype:
+            f:
                 [*, N_res] amino acid indices
             mask:
                 Optional [*, N_res] sequence mask
@@ -606,67 +623,44 @@ class StructureModule(nn.Module):
         s = self.linear_in(s)
 
         # [*, N]
-        rigids = Rigid.identity(
-            s.shape[:-1], 
-            s.dtype, 
-            s.device, 
-            self.training,
-            fmt="quat",
-        )
+        t = T.identity(s.shape[:-1], s.dtype, s.device, self.training)
         outputs = []
         for i in range(self.no_blocks):
             # [*, N, C_s]
-            s = s + self.ipa(s, z, rigids, mask)
+            s = s + self.ipa(s, z, t, mask)
             s = self.ipa_dropout(s)
             s = self.layer_norm_ipa(s)
             s = self.transition(s)
 
             # [*, N]
-            rigids = rigids.compose_q_update_vec(self.bb_update(s))
-
-            # To hew as closely as possible to AlphaFold, we convert our
-            # quaternion-based transformations to rotation-matrix ones
-            # here
-            backb_to_global = Rigid(
-                Rotation(
-                    rot_mats=rigids.get_rots().get_rot_mats(), 
-                    quats=None
-                ),
-                rigids.get_trans(),
-            )
-
-            backb_to_global = backb_to_global.scale_translation(
-                self.trans_scale_factor
-            )
+            t = t.compose(self.bb_update(s))
 
             # [*, N, 7, 2]
-            unnormalized_angles, angles = self.angle_resnet(s, s_initial)
+            unnormalized_a, a = self.angle_resnet(s, s_initial)
 
             all_frames_to_global = self.torsion_angles_to_frames(
-                backb_to_global,
-                angles,
-                aatype,
+                t.scale_translation(self.trans_scale_factor),
+                a,
+                f,
             )
 
             pred_xyz = self.frames_and_literature_positions_to_atom14_pos(
                 all_frames_to_global,
-                aatype,
+                f,
             )
 
-            scaled_rigids = rigids.scale_translation(self.trans_scale_factor)
-            
             preds = {
-                "frames": scaled_rigids.to_tensor_7(),
-                "sidechain_frames": all_frames_to_global.to_tensor_4x4(),
-                "unnormalized_angles": unnormalized_angles,
-                "angles": angles,
+                "frames": t.scale_translation(self.trans_scale_factor).to_4x4(),
+                "sidechain_frames": all_frames_to_global.to_4x4(),
+                "unnormalized_angles": unnormalized_a,
+                "angles": a,
                 "positions": pred_xyz,
             }
 
             outputs.append(preds)
 
             if i < (self.no_blocks - 1):
-                rigids = rigids.stop_rot_gradient()
+                t = t.stop_rot_gradient()
 
         outputs = dict_multimap(torch.stack, outputs)
         outputs["single"] = s
@@ -679,42 +673,38 @@ class StructureModule(nn.Module):
                 restype_rigid_group_default_frame,
                 dtype=float_dtype,
                 device=device,
-                requires_grad=False,
             )
         if self.group_idx is None:
             self.group_idx = torch.tensor(
                 restype_atom14_to_rigid_group,
                 device=device,
-                requires_grad=False,
             )
         if self.atom_mask is None:
             self.atom_mask = torch.tensor(
                 restype_atom14_mask,
                 dtype=float_dtype,
                 device=device,
-                requires_grad=False,
             )
         if self.lit_positions is None:
             self.lit_positions = torch.tensor(
                 restype_atom14_rigid_group_positions,
                 dtype=float_dtype,
                 device=device,
-                requires_grad=False,
             )
 
-    def torsion_angles_to_frames(self, r, alpha, f):
+    def torsion_angles_to_frames(self, t, alpha, f):
         # Lazily initialize the residue constants on the correct device
         self._init_residue_constants(alpha.dtype, alpha.device)
         # Separated purely to make testing less annoying
-        return torsion_angles_to_frames(r, alpha, f, self.default_frames)
+        return torsion_angles_to_frames(t, alpha, f, self.default_frames)
 
     def frames_and_literature_positions_to_atom14_pos(
-        self, r, f  # [*, N, 8]  # [*, N]
+        self, t, f  # [*, N, 8]  # [*, N]
     ):
         # Lazily initialize the residue constants on the correct device
-        self._init_residue_constants(r.get_rots().dtype, r.get_rots().device)
+        self._init_residue_constants(t.rots.dtype, t.rots.device)
         return frames_and_literature_positions_to_atom14_pos(
-            r,
+            t,
             f,
             self.default_frames,
             self.group_idx,

@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 from typing import Tuple
 
-from openfold.model.primitives import Linear, LayerNorm
+from openfold.model.primitives import Linear
 from openfold.utils.tensor_utils import one_hot
 
 
@@ -168,8 +168,8 @@ class RecyclingEmbedder(nn.Module):
         self.bins = None
 
         self.linear = Linear(self.no_bins, self.c_z)
-        self.layer_norm_m = LayerNorm(self.c_m)
-        self.layer_norm_z = LayerNorm(self.c_z)
+        self.layer_norm_m = nn.LayerNorm(self.c_m)
+        self.layer_norm_z = nn.LayerNorm(self.c_z)
 
     def forward(
         self,
@@ -198,7 +198,6 @@ class RecyclingEmbedder(nn.Module):
                 self.no_bins,
                 dtype=x.dtype,
                 device=x.device,
-                requires_grad=False,
             )
 
         # [*, N, C_m]

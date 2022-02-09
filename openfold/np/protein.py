@@ -18,6 +18,7 @@ import dataclasses
 import io
 from typing import Any, Mapping, Optional
 import re
+import logging
 
 from openfold.np import residue_constants
 from Bio.PDB import PDBParser
@@ -97,11 +98,14 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
     b_factors = []
 
     for res in chain:
-        if res.id[2] != " ":
-            raise ValueError(
-                f"PDB contains an insertion code at chain {chain.id} and residue "
-                f"index {res.id[1]}. These are not supported."
-            )
+        try:
+            if res.id[2] != " ":
+                raise ValueError(
+                    f"PDB contains an insertion code at chain {chain.id} and residue "
+                    f"index {res.id[1]}. These are not supported."
+                )
+        except ValueError:
+            logging.info("Skip the this protein")
         res_shortname = residue_constants.restype_3to1.get(res.resname, "X")
         restype_idx = residue_constants.restype_order.get(
             res_shortname, residue_constants.restype_num
