@@ -198,7 +198,11 @@ if __name__ == "__main__":
              model_{1-5}_ptm, as defined on the AlphaFold GitHub."""
     )
     parser.add_argument(
+<<<<<<< HEAD
         "--param_path", type=str, default="../openfold/openfold/resources/params/params_model_1_ptm.npz",
+=======
+        "--param_path", type=str, default="./openfold/resources/params/params_model_1_ptm.npz",
+>>>>>>> only train structure module
         help="""Path to model parameters. If None, parameters are selected
              automatically according to the model name from 
              openfold/resources/params"""

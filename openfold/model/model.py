@@ -99,6 +99,10 @@ class AlphaFold(nn.Module):
         self.structure_module = StructureModule(
             **config["structure_module"],
         )
+        
+        # self.structure_module.eval()
+        # for param in self.structure_module.parameters():
+        #     param.requires_grad = False
 
         self.aux_heads = AuxiliaryHeads(
             config["heads"],
