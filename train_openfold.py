@@ -33,6 +33,9 @@ from openfold.utils.argparse import remove_arguments
 from openfold.utils.loss import AlphaFoldLoss
 from openfold.utils.seed import seed_everything
 from openfold.utils.tensor_utils import tensor_tree_map
+from openfold.utils.import_weights import (
+    import_jax_weights_,
+)
 from scripts.zero_to_fp32 import (
     get_fp32_state_dict_from_zero_checkpoint
 )
@@ -45,6 +48,12 @@ class OpenFoldWrapper(pl.LightningModule):
         super(OpenFoldWrapper, self).__init__()
         self.config = config
         self.model = AlphaFold(config)
+        import_jax_weights_(self.model, args.param_path, version=args.model_name)
+        for name, M in self.model.named_children():
+            if name != "structure_module":
+                M.eval()
+                for param in M.parameters():
+                    param.requires_grad = False
         self.loss = AlphaFoldLoss(config.loss)
         self.ema = ExponentialMovingAverage(
             model=self.model, decay=config.ema.decay
@@ -235,6 +244,14 @@ if __name__ == "__main__":
         "max_template_date", type=str,
         help='''Cutoff for all templates. In training mode, templates are also 
                 filtered by the release date of the target'''
+    )
+    parser.add_argument(
+        "--param_path", type=str, default="./openfold/resources/params/params_model_1_ptm.npz",
+        help="Directory containing alphafold pretrained parameters"
+    )
+    parser.add_argument(
+        "--model_name", type=str, default="model_1",
+        help="Model name of alphafold's pretrained model"
     )
     parser.add_argument(
         "--distillation_data_dir", type=str, default=None,
