@@ -116,3 +116,4 @@ tests/test_data/mmcifs/4i6p.cif
 tests/test_data/mmcifs/4zey.cif
 tests/test_data/mmcifs/5kc1.cif
 scripts/__pycache__/utils.cpython-37.pyc
+dataset_generate/
