@@ -221,7 +221,7 @@ class OpenFoldWrapper(pl.LightningModule):
             )
 
             metrics["gdt_ts"] = gdt_ts_score
-            metrics["gdt_ta"] = gdt_ha_score
+            metrics["gdt_ha"] = gdt_ha_score
     
         return metrics
 
@@ -246,7 +246,7 @@ def main(args):
         seed_everything(args.seed) 
 
     config = model_config(
-        "model_1", 
+        args.config_preset, 
         train=True, 
         low_prec=(args.precision == "bf16")
     ) 
@@ -513,6 +513,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--log_lr", action="store_true", default=False,
+    )
+    parser.add_argument(
+        "--config_preset", type=str, default="initial_training",
+        help='Config setting. Choose e.g. "initial_training", "finetuning", "model_1", etc.'
     )
     parser = pl.Trainer.add_argparse_args(parser)
    
