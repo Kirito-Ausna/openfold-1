@@ -37,20 +37,30 @@ from openfold.utils.loss import AlphaFoldLoss, lddt_ca, compute_drmsd
 from openfold.utils.seed import seed_everything
 from openfold.utils.superimposition import superimpose
 from openfold.utils.tensor_utils import tensor_tree_map
-<<<<<<< HEAD
 from openfold.utils.validation_metrics import (
     gdt_ts,
     gdt_ha,
-=======
-from openfold.utils.import_weights import (
-    import_jax_weights_,
->>>>>>> only train structure module
 )
 from scripts.zero_to_fp32 import (
     get_fp32_state_dict_from_zero_checkpoint
 )
 
+from openfold.utils.import_weights import (
+    import_jax_weights_,
+)
+
 from openfold.utils.logger import PerformanceLoggingCallback
+from pytorch_lightning.callbacks import TQDMProgressBar
+# import wandb
+# wandb_logger = WandbLogger(project="Manifold-Exp3")
+# wandb.init()
+
+class CorrectProgressBar(TQDMProgressBar):
+    def init_train_tqdm(self):
+        bar = super().init_train_tqdm()
+        bar.dynamic_ncols = False
+        bar.ncols = 0
+        return bar
 
 
 class OpenFoldWrapper(pl.LightningModule):
@@ -235,7 +245,7 @@ def main(args):
     config = model_config(
         "model_1", 
         train=True, 
-        low_prec=(args.precision == 16)
+        low_prec=(args.precision == "bf16")
     ) 
     
     model_module = OpenFoldWrapper(config)
@@ -246,7 +256,7 @@ def main(args):
         logging.info("Successfully loaded model weights...")
 
     # TorchScript components of the model
-    script_preset_(model_module)
+    # script_preset_(model_module)
 
     #data_module = DummyDataLoader("batch.pickle")
     data_module = OpenFoldDataModule(
@@ -319,11 +329,14 @@ def main(args):
         # logging.info(f"There is {args.gpus} GPUS")
         # raise ValueError(f"There is {args.gpus} GPUS, But not used")
         strategy = None
-   
+    # pdb.set_trace()
+    bar = CorrectProgressBar()
+    callbacks.append(bar)
     trainer = pl.Trainer.from_argparse_args(
         args,
         strategy=strategy,
         callbacks=callbacks,
+        logger=wandb_logger
     )
 
     if(args.resume_model_weights_only):
