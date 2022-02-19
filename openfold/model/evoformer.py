@@ -551,11 +551,9 @@ class ExtraMSAStack(nn.Module):
         **kwargs,
     ):
         super(ExtraMSAStack, self).__init__()
-
+        
         self.clear_cache_between_blocks = clear_cache_between_blocks
-
         self.blocks = nn.ModuleList()
-
         for _ in range(no_blocks):
             block = ExtraMSABlock(
                 c_m=c_m,
@@ -571,7 +569,7 @@ class ExtraMSAStack(nn.Module):
                 pair_dropout=pair_dropout,
                 inf=inf,
                 eps=eps,
-                ckpt=False,
+                ckpt=ckpt,
             )
             self.blocks.append(block)
 
