@@ -41,6 +41,9 @@ from openfold.utils.validation_metrics import (
     gdt_ts,
     gdt_ha,
 )
+from openfold.utils.import_weights import (
+    import_jax_weights_,
+)
 from scripts.zero_to_fp32 import (
     get_fp32_state_dict_from_zero_checkpoint
 )

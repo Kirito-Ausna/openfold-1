@@ -119,4 +119,3 @@ wandb/
 .gitignore
 dataset_generate/
 test/
-wandb/

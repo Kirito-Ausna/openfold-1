@@ -211,9 +211,13 @@ python3 train_openfold.py mmcif_dir/ alignment_dir/ template_mmcif_dir/ \
     --gpus 8 --replace_sampler_ddp=True \
     --seed 42 \ # in multi-gpu settings, the seed must be specified
     --deepspeed_config_path deepspeed_config.json \
+<<<<<<< HEAD
     --checkpoint_every_epoch \
     --resume_from_ckpt ckpt_dir/ \
     --train_chain_data_cache_path chain_data_cache.json
+=======
+    --resume_from_ckpt ckpt_dir/
+>>>>>>> bedf98aa342e2ac65a9d74f11b8cd1589ecab540
 ```
 
 where `--template_release_dates_cache_path` is a path to the `.json` file

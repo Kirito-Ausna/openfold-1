@@ -256,7 +256,10 @@ def get_stochastic_train_filter_prob(
     for p in probabilities:
         out *= p
 
-    return out
+def looped_sequence(sequence):
+    while True:
+        for x in sequence:
+            yield x
 
 
 def looped_sequence(sequence):
@@ -477,7 +480,6 @@ class OpenFoldDataModule(pl.LightningDataModule):
             template_release_dates_cache_path
         )
         self.batch_seed = batch_seed
-        self.train_epoch_len = train_epoch_len
 
         if(self.train_data_dir is None and self.predict_data_dir is None):
             raise ValueError(
@@ -491,7 +493,7 @@ class OpenFoldDataModule(pl.LightningDataModule):
             raise ValueError(
                 'In training mode, train_alignment_dir must be specified'
             )
-        elif(not self.training_mode and predict_alignment_dir is None):
+        elif(not self.training_mode and self.predict_alingment_dir is None):
             raise ValueError(
                 'In inference mode, predict_alignment_dir must be specified'
             )      
