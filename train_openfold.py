@@ -41,6 +41,18 @@ from scripts.zero_to_fp32 import (
 )
 
 from openfold.utils.logger import PerformanceLoggingCallback
+from pytorch_lightning.callbacks import TQDMProgressBar
+from pytorch_lightning.loggers import WandbLogger
+# import wandb
+wandb_logger = WandbLogger(project="Manifold-Exp3")
+# wandb.init()
+
+class CorrectProgressBar(TQDMProgressBar):
+    def init_train_tqdm(self):
+        bar = super().init_train_tqdm()
+        bar.dynamic_ncols = False
+        bar.ncols = 0
+        return bar
 
 
 class OpenFoldWrapper(pl.LightningModule):
@@ -74,7 +86,8 @@ class OpenFoldWrapper(pl.LightningModule):
 
         # Compute loss
         loss = self.loss(outputs, batch)
-
+        self.log("train/loss", loss,  on_step=True, logger=True)
+        # wandb.log({"train/loss": loss})
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
@@ -87,6 +100,7 @@ class OpenFoldWrapper(pl.LightningModule):
         outputs = self(batch)
         batch = tensor_tree_map(lambda t: t[..., -1], batch)
         loss = self.loss(outputs, batch)
+        self.log("test/loss", loss)
         return {"val_loss": loss}
 
     def validation_epoch_end(self, _):
@@ -119,7 +133,7 @@ def main(args):
     config = model_config(
         "model_1", 
         train=True, 
-        low_prec=(args.precision == 16)
+        low_prec=(args.precision == "bf16")
     ) 
     
     model_module = OpenFoldWrapper(config)
@@ -130,7 +144,7 @@ def main(args):
         logging.info("Successfully loaded model weights...")
 
     # TorchScript components of the model
-    script_preset_(model_module)
+    # script_preset_(model_module)
 
     #data_module = DummyDataLoader("batch.pickle")
     data_module = OpenFoldDataModule(
@@ -189,10 +203,13 @@ def main(args):
         # raise ValueError(f"There is {args.gpus} GPUS, But not used")
         strategy = None
     # pdb.set_trace()
+    bar = CorrectProgressBar()
+    callbacks.append(bar)
     trainer = pl.Trainer.from_argparse_args(
         args,
         strategy=strategy,
         callbacks=callbacks,
+        logger=wandb_logger
     )
 
     if(args.resume_model_weights_only):

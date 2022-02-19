@@ -7,11 +7,12 @@ template_mmcif_dir="/usr/commondata/public/CASP14_Datasets/datasets/pdb_mmcif/mm
 output_dir="/root/AlphaFold-Pytorch/openfold/output_dir"
 python3 train_openfold.py $train_dir $alignment_dir $template_mmcif_dir $output_dir\
     2021-10-10\
-    --precision bf16\
+    --precision 32\
     --gpus 4\
     --replace_sampler_ddp True\
     --seed 36\
     --deepspeed_config_path ./deepspeed_config.json
+    --max_epochs 10
     # --resume_from_ckpt ckpt_dir/
     # in multi-gpu settings, the seed must be specified
     # --template_release_dates_cache_path mmcif_cache.json \ 
