@@ -24,7 +24,7 @@ from typing import Dict, Optional, Tuple
 
 from openfold.np import residue_constants
 from openfold.utils import feats
-from openfold.utils.affine_utils import T
+from openfold.utils.rigid_utils import Rotation, Rigid
 from openfold.utils.tensor_utils import (
     tree_map,
     tensor_tree_map,
@@ -43,8 +43,8 @@ def softmax_cross_entropy(logits, labels):
 
 
 def sigmoid_cross_entropy(logits, labels):
-    log_p = torch.nn.functional.logsigmoid(logits)
-    log_not_p = torch.nn.functional.logsigmoid(-logits)
+    log_p = torch.log(torch.sigmoid(logits))
+    log_not_p = torch.log(torch.sigmoid(-logits))
     loss = -labels * log_p - (1 - labels) * log_not_p
     return loss
 
@@ -74,8 +74,8 @@ def torsion_angle_loss(
 
 
 def compute_fape(
-    pred_frames: T,
-    target_frames: T,
+    pred_frames: Rigid,
+    target_frames: Rigid,
     frames_mask: torch.Tensor,
     pred_positions: torch.Tensor,
     target_positions: torch.Tensor,
@@ -84,6 +84,30 @@ def compute_fape(
     l1_clamp_distance: Optional[float] = None,
     eps=1e-8,
 ) -> torch.Tensor:
+    """
+        Computes FAPE loss.
+        Args:
+            pred_frames:
+                [*, N_frames] Rigid object of predicted frames
+            target_frames:
+                [*, N_frames] Rigid object of ground truth frames
+            frames_mask:
+                [*, N_frames] binary mask for the frames
+            pred_positions:
+                [*, N_pts, 3] predicted atom positions
+            target_positions:
+                [*, N_pts, 3] ground truth positions
+            positions_mask:
+                [*, N_pts] positions mask
+            length_scale:
+                Length scale by which the loss is divided
+            l1_clamp_distance:
+                Cutoff above which distance errors are disregarded
+            eps:
+                Small value used to regularize denominators
+        Returns:
+            [*] loss tensor
+    """
     # [*, N_frames, N_pts, 3]
     local_pred_pos = pred_frames.invert()[..., None].apply(
         pred_positions[..., None, :, :],
@@ -111,7 +135,7 @@ def compute_fape(
     # )
     # normed_error = torch.sum(normed_error, dim=(-1, -2)) / (eps + norm_factor)
     #
-    # ("roughly" because eps is necessarily duplicated in the latter
+    # ("roughly" because eps is necessarily duplicated in the latter)
     normed_error = torch.sum(normed_error, dim=-1)
     normed_error = (
         normed_error / (eps + torch.sum(frames_mask, dim=-1))[..., None]
@@ -123,8 +147,8 @@ def compute_fape(
 
 
 def backbone_loss(
-    backbone_affine_tensor: torch.Tensor,
-    backbone_affine_mask: torch.Tensor,
+    backbone_rigid_tensor: torch.Tensor,
+    backbone_rigid_mask: torch.Tensor,
     traj: torch.Tensor,
     use_clamped_fape: Optional[torch.Tensor] = None,
     clamp_distance: float = 10.0,
@@ -132,16 +156,27 @@ def backbone_loss(
     eps: float = 1e-4,
     **kwargs,
 ) -> torch.Tensor:
-    pred_aff = T.from_tensor(traj)
-    gt_aff = T.from_tensor(backbone_affine_tensor)
+    pred_aff = Rigid.from_tensor_7(traj)
+    pred_aff = Rigid(
+        Rotation(rot_mats=pred_aff.get_rots().get_rot_mats(), quats=None),
+        pred_aff.get_trans(),
+    )
+
+    # DISCREPANCY: DeepMind somehow gets a hold of a tensor_7 version of
+    # backbone tensor, normalizes it, and then turns it back to a rotation
+    # matrix. To avoid a potentially numerically unstable rotation matrix
+    # to quaternion conversion, we just use the original rotation matrix
+    # outright. This one hasn't been composed a bunch of times, though, so
+    # it might be fine.
+    gt_aff = Rigid.from_tensor_4x4(backbone_rigid_tensor)
 
     fape_loss = compute_fape(
         pred_aff,
         gt_aff[None],
-        backbone_affine_mask[None],
+        backbone_rigid_mask[None],
         pred_aff.get_trans(),
         gt_aff[None].get_trans(),
-        backbone_affine_mask[None],
+        backbone_rigid_mask[None],
         l1_clamp_distance=clamp_distance,
         length_scale=loss_unit_distance,
         eps=eps,
@@ -150,10 +185,10 @@ def backbone_loss(
         unclamped_fape_loss = compute_fape(
             pred_aff,
             gt_aff[None],
-            backbone_affine_mask[None],
+            backbone_rigid_mask[None],
             pred_aff.get_trans(),
             gt_aff[None].get_trans(),
-            backbone_affine_mask[None],
+            backbone_rigid_mask[None],
             l1_clamp_distance=None,
             length_scale=loss_unit_distance,
             eps=eps,
@@ -193,9 +228,9 @@ def sidechain_loss(
     sidechain_frames = sidechain_frames[-1]
     batch_dims = sidechain_frames.shape[:-4]
     sidechain_frames = sidechain_frames.view(*batch_dims, -1, 4, 4)
-    sidechain_frames = T.from_4x4(sidechain_frames)
+    sidechain_frames = Rigid.from_tensor_4x4(sidechain_frames)
     renamed_gt_frames = renamed_gt_frames.view(*batch_dims, -1, 4, 4)
-    renamed_gt_frames = T.from_4x4(renamed_gt_frames)
+    renamed_gt_frames = Rigid.from_tensor_4x4(renamed_gt_frames)
     rigidgroups_gt_exists = rigidgroups_gt_exists.reshape(*batch_dims, -1)
     sidechain_atom_pos = sidechain_atom_pos[-1]
     sidechain_atom_pos = sidechain_atom_pos.view(*batch_dims, -1, 3)
@@ -255,6 +290,28 @@ def supervised_chi_loss(
     eps=1e-6,
     **kwargs,
 ) -> torch.Tensor:
+    """
+        Implements Algorithm 27 (torsionAngleLoss)
+        Args:
+            angles_sin_cos:
+                [*, N, 7, 2] predicted angles
+            unnormalized_angles_sin_cos:
+                The same angles, but unnormalized
+            aatype:
+                [*, N] residue indices
+            seq_mask:
+                [*, N] sequence mask
+            chi_mask:
+                [*, N, 7] angle mask
+            chi_angles_sin_cos:
+                [*, N, 7, 2] ground truth angles
+            chi_weight:
+                Weight for the angle component of the loss
+            angle_norm_weight:
+                Weight for the normalization component of the loss
+        Returns:
+            [*] loss tensor
+    """
     pred_angles = angles_sin_cos[..., 3:, :]
     residue_type_one_hot = torch.nn.functional.one_hot(
         aatype,
@@ -318,26 +375,15 @@ def compute_plddt(logits: torch.Tensor) -> torch.Tensor:
     return pred_lddt_ca * 100
 
 
-def lddt_loss(
-    logits: torch.Tensor,
+def lddt(
     all_atom_pred_pos: torch.Tensor,
     all_atom_positions: torch.Tensor,
     all_atom_mask: torch.Tensor,
-    resolution: torch.Tensor,
     cutoff: float = 15.0,
-    no_bins: int = 50,
-    min_resolution: float = 0.1,
-    max_resolution: float = 3.0,
     eps: float = 1e-10,
-    **kwargs,
+    per_residue: bool = True,
 ) -> torch.Tensor:
     n = all_atom_mask.shape[-2]
-
-    ca_pos = residue_constants.atom_order["CA"]
-    all_atom_pred_pos = all_atom_pred_pos[..., ca_pos, :]
-    all_atom_positions = all_atom_positions[..., ca_pos, :]
-    all_atom_mask = all_atom_mask[..., ca_pos : (ca_pos + 1)]  # keep dim
-
     dmat_true = torch.sqrt(
         eps
         + torch.sum(
@@ -378,8 +424,63 @@ def lddt_loss(
     )
     score = score * 0.25
 
-    norm = 1.0 / (eps + torch.sum(dists_to_score, dim=-1))
-    score = norm * (eps + torch.sum(dists_to_score * score, dim=-1))
+    dims = (-1,) if per_residue else (-2, -1)
+    norm = 1.0 / (eps + torch.sum(dists_to_score, dim=dims))
+    score = norm * (eps + torch.sum(dists_to_score * score, dim=dims))
+
+    return score
+
+
+def lddt_ca(
+    all_atom_pred_pos: torch.Tensor,
+    all_atom_positions: torch.Tensor,
+    all_atom_mask: torch.Tensor,
+    cutoff: float = 15.0,
+    eps: float = 1e-10,
+    per_residue: bool = True,
+) -> torch.Tensor:
+    ca_pos = residue_constants.atom_order["CA"]
+    all_atom_pred_pos = all_atom_pred_pos[..., ca_pos, :]
+    all_atom_positions = all_atom_positions[..., ca_pos, :]
+    all_atom_mask = all_atom_mask[..., ca_pos : (ca_pos + 1)]  # keep dim
+
+    return lddt(
+        all_atom_pred_pos,
+        all_atom_positions,
+        all_atom_mask,
+        cutoff=cutoff,
+        eps=eps,
+        per_residue=per_residue,
+    )
+
+
+def lddt_loss(
+    logits: torch.Tensor,
+    all_atom_pred_pos: torch.Tensor,
+    all_atom_positions: torch.Tensor,
+    all_atom_mask: torch.Tensor,
+    resolution: torch.Tensor,
+    cutoff: float = 15.0,
+    no_bins: int = 50,
+    min_resolution: float = 0.1,
+    max_resolution: float = 3.0,
+    eps: float = 1e-10,
+    **kwargs,
+) -> torch.Tensor:
+    n = all_atom_mask.shape[-2]
+
+    ca_pos = residue_constants.atom_order["CA"]
+    all_atom_pred_pos = all_atom_pred_pos[..., ca_pos, :]
+    all_atom_positions = all_atom_positions[..., ca_pos, :]
+    all_atom_mask = all_atom_mask[..., ca_pos : (ca_pos + 1)]  # keep dim
+
+    score = lddt(
+        all_atom_pred_pos, 
+        all_atom_positions, 
+        all_atom_mask, 
+        cutoff=cutoff, 
+        eps=eps
+    )
 
     score = score.detach()
 
@@ -422,7 +523,7 @@ def distogram_loss(
         device=logits.device,
     )
     boundaries = boundaries ** 2
-
+    
     dists = torch.sum(
         (pseudo_beta[..., None, :] - pseudo_beta[..., None, :, :]) ** 2,
         dim=-1,
@@ -480,7 +581,6 @@ def compute_predicted_aligned_error(
     **kwargs,
 ) -> Dict[str, torch.Tensor]:
     """Computes aligned confidence metrics from logits.
-
     Args:
       logits: [*, num_res, num_res, num_bins] the logits output from
         PredictedAlignedErrorHead.
@@ -550,8 +650,8 @@ def compute_tm(
 def tm_loss(
     logits,
     final_affine_tensor,
-    backbone_affine_tensor,
-    backbone_affine_mask,
+    backbone_rigid_tensor,
+    backbone_rigid_mask,
     resolution,
     max_bin=31,
     no_bins=64,
@@ -560,16 +660,17 @@ def tm_loss(
     eps=1e-8,
     **kwargs,
 ):
-    pred_affine = T.from_4x4(final_affine_tensor)
-    backbone_affine = T.from_4x4(backbone_affine_tensor)
+    pred_affine = Rigid.from_tensor_7(final_affine_tensor)
+    backbone_rigid = Rigid.from_tensor_4x4(backbone_rigid_tensor)
 
     def _points(affine):
         pts = affine.get_trans()[..., None, :, :]
         return affine.invert()[..., None].apply(pts)
 
     sq_diff = torch.sum(
-        (_points(pred_affine) - _points(backbone_affine)) ** 2, dim=-1
+        (_points(pred_affine) - _points(backbone_rigid)) ** 2, dim=-1
     )
+
     sq_diff = sq_diff.detach()
 
     boundaries = torch.linspace(
@@ -583,7 +684,7 @@ def tm_loss(
     )
 
     square_mask = (
-        backbone_affine_mask[..., None] * backbone_affine_mask[..., None, :]
+        backbone_rigid_mask[..., None] * backbone_rigid_mask[..., None, :]
     )
 
     loss = torch.sum(errors * square_mask, dim=-1)
@@ -613,11 +714,9 @@ def between_residue_bond_loss(
     eps=1e-6,
 ) -> Dict[str, torch.Tensor]:
     """Flat-bottom loss to penalize structural violations between residues.
-
     This is a loss penalizing any violation of the geometry around the peptide
     bond between consecutive amino acids. This loss corresponds to
     Jumper et al. (2021) Suppl. Sec. 1.9.11, eq 44, 45.
-
     Args:
       pred_atom_positions: Atom positions in atom37/14 representation
       pred_atom_mask: Atom mask in atom37/14 representation
@@ -628,7 +727,6 @@ def between_residue_bond_loss(
         of pdb distributions
       tolerance_factor_hard: hard tolerance factor measured in standard deviations
         of pdb distributions
-
     Returns:
       Dict containing:
         * 'c_n_loss_mean': Loss for peptide bond length violations
@@ -772,12 +870,10 @@ def between_residue_clash_loss(
     eps=1e-10,
 ) -> Dict[str, torch.Tensor]:
     """Loss to penalize steric clashes between residues.
-
     This is a loss penalizing any steric clashes due to non bonded atoms in
     different peptides coming too close. This loss corresponds to the part with
     different residues of
     Jumper et al. (2021) Suppl. Sec. 1.9.11, eq 46.
-
     Args:
       atom14_pred_positions: Predicted positions of atoms in
         global prediction frame
@@ -787,7 +883,6 @@ def between_residue_clash_loss(
       residue_index: Residue index for given amino acid.
       overlap_tolerance_soft: Soft tolerance factor.
       overlap_tolerance_hard: Hard tolerance factor.
-
     Returns:
       Dict containing:
         * 'mean_loss': average clash loss
@@ -918,12 +1013,10 @@ def within_residue_violations(
     eps=1e-10,
 ) -> Dict[str, torch.Tensor]:
     """Loss to penalize steric clashes within residues.
-
     This is a loss penalizing any steric violations or clashes of non-bonded atoms
     in a given peptide. This loss corresponds to the part with
     the same residues of
     Jumper et al. (2021) Suppl. Sec. 1.9.11, eq 46.
-
     Args:
         atom14_pred_positions ([*, N, 14, 3]):
             Predicted positions of atoms in global prediction frame.
@@ -936,7 +1029,6 @@ def within_residue_violations(
             Upper bound on allowed distances
         tighten_bounds_for_loss ([*, N]):
             Extra factor to tighten loss
-
     Returns:
       Dict containing:
         * 'per_atom_loss_sum' ([*, N, 14]):
@@ -1134,10 +1226,8 @@ def extreme_ca_ca_distance_violations(
     eps=1e-6,
 ) -> torch.Tensor:
     """Counts residues whose Ca is a large distance from its neighbour.
-
     Measures the fraction of CA-CA pairs between consecutive amino acids that are
     more than 'max_angstrom_tolerance' apart.
-
     Args:
       pred_atom_positions: Atom positions in atom37/14 representation
       pred_atom_mask: Atom mask in atom37/14 representation
@@ -1251,12 +1341,9 @@ def compute_renamed_ground_truth(
 ) -> Dict[str, torch.Tensor]:
     """
     Find optimal renaming of ground truth based on the predicted positions.
-
     Alg. 26 "renameSymmetricGroundTruthAtoms"
-
     This renamed ground truth is then used for all losses,
     such that each loss moves the atoms in the same direction.
-
     Args:
       batch: Dictionary containing:
         * atom14_gt_positions: Ground truth positions.
@@ -1379,7 +1466,6 @@ def experimentally_resolved_loss(
 def masked_msa_loss(logits, true_msa, bert_mask, eps=1e-8, **kwargs):
     """
     Computes BERT-style masked MSA loss. Implements subsection 1.9.9.
-
     Args:
         logits: [*, N_seq, N_res, 23] predicted residue distribution
         true_msa: [*, N_seq, N_res] true MSA
@@ -1444,7 +1530,6 @@ def compute_drmsd_np(structure_1, structure_2, mask=None):
 
 class AlphaFoldLoss(nn.Module):
     """Aggregation of the various losses described in the supplement"""
-
     def __init__(self, config):
         super(AlphaFoldLoss, self).__init__()
         self.config = config
@@ -1497,11 +1582,13 @@ class AlphaFoldLoss(nn.Module):
                 out["violation"],
                 **batch,
             ),
-            "tm": lambda: tm_loss(
+        }
+
+        if(self.config.tm.enabled):
+            loss_fns["tm"] = lambda: tm_loss(
                 logits=out["tm_logits"],
                 **{**batch, **out, **self.config.tm},
-            ),
-        }
+            )
 
         cum_loss = 0.
         losses = {}

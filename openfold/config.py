@@ -12,27 +12,61 @@ def set_inf(c, inf):
 
 def model_config(name, train=False, low_prec=False):
     c = copy.deepcopy(config)
-    if name == "model_1":
+    if name == "initial_training":
+        # AF2 Suppl. Table 4, "initial training" setting
         pass
+    elif name == "finetuning":
+        # AF2 Suppl. Table 4, "finetuning" setting
+        c.data.common.max_extra_msa = 5120
+        c.data.train.crop_size = 384
+        c.data.train.max_msa_clusters = 512
+        c.loss.violation.weight = 1.
+    elif name == "model_1":
+        # AF2 Suppl. Table 5, Model 1.1.1
+        c.data.common.max_extra_msa = 5120
+        c.data.common.reduce_max_clusters_by_max_templates = True
+        c.data.common.use_templates = True
+        c.data.common.use_template_torsion_angles = True
+        c.model.template.enabled = True
     elif name == "model_2":
-        pass
+        # AF2 Suppl. Table 5, Model 1.1.2
+        c.data.common.reduce_max_clusters_by_max_templates = True
+        c.data.common.use_templates = True
+        c.data.common.use_template_torsion_angles = True
+        c.model.template.enabled = True
     elif name == "model_3":
+        # AF2 Suppl. Table 5, Model 1.2.1
+        c.data.common.max_extra_msa = 5120
         c.model.template.enabled = False
     elif name == "model_4":
+        # AF2 Suppl. Table 5, Model 1.2.2
+        c.data.common.max_extra_msa = 5120
         c.model.template.enabled = False
     elif name == "model_5":
+        # AF2 Suppl. Table 5, Model 1.2.3
         c.model.template.enabled = False
     elif name == "model_1_ptm":
+        c.data.common.max_extra_msa = 5120
+        c.data.common.reduce_max_clusters_by_max_templates = True
+        c.data.common.use_templates = True
+        c.data.common.use_template_torsion_angles = True
+        c.model.template.enabled = True
         c.model.heads.tm.enabled = True
         c.loss.tm.weight = 0.1
     elif name == "model_2_ptm":
+        c.data.common.reduce_max_clusters_by_max_templates = True
+        c.data.common.use_templates = True
+        c.data.common.use_template_torsion_angles = True
+        c.model.template.enabled = True
         c.model.heads.tm.enabled = True
         c.loss.tm.weight = 0.1
     elif name == "model_3_ptm":
+        c.data.common.max_extra_msa = 5120
         c.model.template.enabled = False
         c.model.heads.tm.enabled = True
         c.loss.tm.weight = 0.1
     elif name == "model_4_ptm":
+        c.data.common.max_extra_msa = 5120
         c.model.template.enabled = False
         c.model.heads.tm.enabled = True
         c.loss.tm.weight = 0.1
@@ -64,6 +98,7 @@ c_s = mlc.FieldReference(384, field_type=int)
 blocks_per_ckpt = mlc.FieldReference(None, field_type=int)
 chunk_size = mlc.FieldReference(4, field_type=int)
 aux_distogram_bins = mlc.FieldReference(64, field_type=int)
+tm_enabled = mlc.FieldReference(False, field_type=bool)
 eps = mlc.FieldReference(1e-8, field_type=float)
 templates_enabled = mlc.FieldReference(True, field_type=bool)
 embed_template_torsion_angles = mlc.FieldReference(True, field_type=bool)
@@ -89,8 +124,8 @@ config = mlc.ConfigDict(
                     "atom14_gt_exists": [NUM_RES, None],
                     "atom14_gt_positions": [NUM_RES, None, None],
                     "atom37_atom_exists": [NUM_RES, None],
-                    "backbone_affine_mask": [NUM_RES],
-                    "backbone_affine_tensor": [NUM_RES, None, None],
+                    "backbone_rigid_mask": [NUM_RES],
+                    "backbone_rigid_tensor": [NUM_RES, None, None],
                     "bert_mask": [NUM_MSA_SEQ, NUM_RES],
                     "chi_angles_sin_cos": [NUM_RES, None, None],
                     "chi_mask": [NUM_RES, None],
@@ -126,8 +161,8 @@ config = mlc.ConfigDict(
                     "template_alt_torsion_angles_sin_cos": [
                         NUM_TEMPLATES, NUM_RES, None, None,
                     ],
-                    "template_backbone_affine_mask": [NUM_TEMPLATES, NUM_RES],
-                    "template_backbone_affine_tensor": [
+                    "template_backbone_rigid_mask": [NUM_TEMPLATES, NUM_RES],
+                    "template_backbone_rigid_tensor": [
                         NUM_TEMPLATES, NUM_RES, None, None,
                     ],
                     "template_mask": [NUM_TEMPLATES],
@@ -174,7 +209,6 @@ config = mlc.ConfigDict(
             },
             "supervised": {
                 "clamp_prob": 0.9,
-                "uniform_recycling": True,
                 "supervised_features": [
                     "all_atom_mask",
                     "all_atom_positions",
@@ -193,7 +227,7 @@ config = mlc.ConfigDict(
                 "crop": False,
                 "crop_size": None,
                 "supervised": False,
-                "subsample_recycling": False,
+                "uniform_recycling": False,
             },
             "eval": {
                 "fixed_size": True,
@@ -205,7 +239,7 @@ config = mlc.ConfigDict(
                 "crop": False,
                 "crop_size": None,
                 "supervised": True,
-                "subsample_recycling": False,
+                "uniform_recycling": False,
             },
             "train": {
                 "fixed_size": True,
@@ -219,14 +253,14 @@ config = mlc.ConfigDict(
                 "crop_size": 256,
                 "supervised": True,
                 "clamp_prob": 0.9,
-                "subsample_recycling": True,
                 "max_distillation_msa_clusters": 1000,
+                "uniform_recycling": True,
             },
             "data_module": {
                 "use_small_bfd": False,
                 "data_loaders": {
                     "batch_size": 1,
-                    "num_workers": 8,
+                    "num_workers": 16,
                 },
             },
         },
@@ -318,10 +352,10 @@ config = mlc.ConfigDict(
                     "transition_n": 4,
                     "msa_dropout": 0.15,
                     "pair_dropout": 0.25,
-                    "blocks_per_ckpt": blocks_per_ckpt,
                     "clear_cache_between_blocks": True,
                     "inf": 1e9,
                     "eps": eps,  # 1e-10,
+                    "ckpt": blocks_per_ckpt is not None,
                 },
                 "enabled": True,
             },
@@ -374,7 +408,7 @@ config = mlc.ConfigDict(
                 "tm": {
                     "c_z": c_z,
                     "no_bins": aux_distogram_bins,
-                    "enabled": False,
+                    "enabled": tm_enabled,
                 },
                 "masked_msa": {
                     "c_m": c_m,
@@ -452,6 +486,7 @@ config = mlc.ConfigDict(
                 "max_resolution": 3.0,
                 "eps": eps,  # 1e-8,
                 "weight": 0.0,
+                "enabled": tm_enabled,
             },
             "eps": eps,
         },

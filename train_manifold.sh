@@ -11,8 +11,15 @@ python3 train_openfold.py $train_dir $alignment_dir $template_mmcif_dir $output_
     --gpus 4\
     --replace_sampler_ddp True\
     --seed 36\
-    --deepspeed_config_path ./deepspeed_config.json
-    --max_epochs 10
+    --deepspeed_config_path ./deepspeed_config.json\
+    --max_epochs 10\
+    --wandb\
+    --experiment_name Test1\
+    --wandb_id kirito_asuna\
+    --wandb_project Manifold_Exp4\
+    --config_preset initial_training\
+
+
     # --resume_from_ckpt ckpt_dir/
     # in multi-gpu settings, the seed must be specified
     # --template_release_dates_cache_path mmcif_cache.json \ 
