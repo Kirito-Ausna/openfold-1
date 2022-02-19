@@ -338,8 +338,7 @@ def main(args):
     trainer = pl.Trainer.from_argparse_args(
         args,
         strategy=strategy,
-        callbacks=callbacks,
-        logger=wandb_logger
+        callbacks=callbacks
     )
 
     if(args.resume_model_weights_only):

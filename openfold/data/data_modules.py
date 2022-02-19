@@ -251,22 +251,19 @@ def get_stochastic_train_filter_prob(
     
     chain_length = len(chain_data_cache_entry["seq"])
     probabilities.append((1 / 512) * (max(min(chain_length, 512), 256)))
+    
      # Risk of underflow here?
     out = 1
     for p in probabilities:
         out *= p
+        
+    
+    return out
 
 def looped_sequence(sequence):
     while True:
         for x in sequence:
             yield x
-
-
-def looped_sequence(sequence):
-    while True:
-        for x in sequence:
-            yield x
-
 
 class OpenFoldDataset(torch.utils.data.IterableDataset):
     """
@@ -450,6 +447,7 @@ class OpenFoldDataModule(pl.LightningDataModule):
         kalign_binary_path: str = '/usr/bin/kalign',
         train_mapping_path: Optional[str] = None,
         distillation_mapping_path: Optional[str] = None,
+        obsolete_pdbs_file_path: Optional[str] = None,
         template_release_dates_cache_path: Optional[str] = None,
         batch_seed: Optional[int] = None,
         train_epoch_len: int = 50000, 
@@ -479,7 +477,9 @@ class OpenFoldDataModule(pl.LightningDataModule):
         self.template_release_dates_cache_path = (
             template_release_dates_cache_path
         )
+        self.obsolete_pdbs_file_path = obsolete_pdbs_file_path
         self.batch_seed = batch_seed
+        self.train_epoch_len = train_epoch_len
 
         if(self.train_data_dir is None and self.predict_data_dir is None):
             raise ValueError(
@@ -493,7 +493,7 @@ class OpenFoldDataModule(pl.LightningDataModule):
             raise ValueError(
                 'In training mode, train_alignment_dir must be specified'
             )
-        elif(not self.training_mode and self.predict_alingment_dir is None):
+        elif(not self.training_mode and predict_alignment_dir is None):
             raise ValueError(
                 'In inference mode, predict_alignment_dir must be specified'
             )      
