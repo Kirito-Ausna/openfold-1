@@ -291,10 +291,10 @@ class OpenFoldDataset(torch.utils.data.IterableDataset):
         self.epoch_len = epoch_len
         self.generator = generator
         
-        self.chain_data_caches = []
-        for path in chain_data_cache_paths:
-            with open(path, "r") as fp:
-                self.chain_data_caches.append(json.load(fp))
+        # self.chain_data_caches = []
+        # for path in chain_data_cache_paths:
+        #      with open(path, "r") as fp:
+        #          self.chain_data_caches.append(json.load(fp))
 
         def looped_shuffled_dataset_idx(dataset_len):
             while True:
@@ -377,21 +377,20 @@ class OpenFoldBatchCollator:
             keyed_probs.append(
                 ("use_clamped_fape", [1 - clamp_prob, clamp_prob])
             ) 
-            if(self.config.supervised.uniform_recycling):
-                recycling_probs = [
-                    1. / (max_iters + 1) for _ in range(max_iters + 1)
-                ]
-                keyed_probs.append(
-                    ("no_recycling_iters", recycling_probs)
-                )
+            
+        if(stage_cfg.uniform_recycling):
+            recycling_probs = [
+                1. / (max_iters + 1) for _ in range(max_iters + 1)
+            ]
         else:
             recycling_probs = [
                 0. for _ in range(max_iters + 1)
             ]
             recycling_probs[-1] = 1.
-            keyed_probs.append(
-                ("no_recycling_iters", recycling_probs)
-            )
+        
+        keyed_probs.append(
+            ("no_recycling_iters", recycling_probs)
+        )
 
         keys, probs = zip(*keyed_probs)
         max_len = max([len(p) for p in probs])
@@ -533,7 +532,8 @@ class OpenFoldDataModule(pl.LightningDataModule):
                 _output_raw=True,
                 _alignment_index=self._alignment_index,
             )
-
+            
+            distillation_dataset = None
             if(self.distillation_data_dir is not None):
                 distillation_dataset = dataset_gen(
                     data_dir=self.distillation_data_dir,

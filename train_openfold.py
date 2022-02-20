@@ -1,4 +1,5 @@
 import argparse
+from email.policy import default
 import logging
 import os
 # import pdb
@@ -19,7 +20,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.plugins.training_type import DeepSpeedPlugin,DDPPlugin
 from pytorch_lightning.plugins.environments import SLURMEnvironment
 import torch
-
+torch.multiprocessing.set_sharing_strategy('file_system')
 from openfold.config import model_config
 from openfold.data.data_modules import (
     OpenFoldDataModule,
@@ -46,10 +47,6 @@ from openfold.utils.import_weights import (
 )
 from scripts.zero_to_fp32 import (
     get_fp32_state_dict_from_zero_checkpoint
-)
-
-from openfold.utils.import_weights import (
-    import_jax_weights_,
 )
 
 from openfold.utils.logger import PerformanceLoggingCallback
@@ -337,8 +334,10 @@ def main(args):
     callbacks.append(bar)
     trainer = pl.Trainer.from_argparse_args(
         args,
+        default_root_dir=args.output_dir,
         strategy=strategy,
-        callbacks=callbacks
+        callbacks=callbacks,
+        logger=loggers,
     )
 
     if(args.resume_model_weights_only):

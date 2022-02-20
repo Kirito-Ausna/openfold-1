@@ -1071,11 +1071,11 @@ def atom37_to_torsion_angles(
 
 
 def get_backbone_frames(protein):
-    # TODO: Verify that this is correct
-    protein["backbone_affine_tensor"] = protein["rigidgroups_gt_frames"][
+    # DISCREPANCY: AlphaFold uses tensor_7s here. I don't know why.
+    protein["backbone_rigid_tensor"] = protein["rigidgroups_gt_frames"][
         ..., 0, :, :
     ]
-    protein["backbone_affine_mask"] = protein["rigidgroups_gt_exists"][..., 0]
+    protein["backbone_rigid_mask"] = protein["rigidgroups_gt_exists"][..., 0]
 
     return protein
 
