@@ -24,6 +24,7 @@ from openfold.data.tools import jackhmmer, hhblits, hhsearch
 from openfold.data.tools.utils import to_date 
 from openfold.np import residue_constants, protein
 
+import glob
 
 FeatureDict = Mapping[str, np.ndarray]
 
@@ -322,6 +323,7 @@ class DataPipeline:
         template_featurizer: Optional[templates.TemplateHitFeaturizer],
     ):
         self.template_featurizer = template_featurizer
+        self.SeqEmb_path = "/usr/commondata/local_public/rep/train/esm1b_full"
 
     def _parse_msa_data(
         self,
@@ -540,7 +542,12 @@ class DataPipeline:
 
         msa_features = self._process_msa_feats(alignment_dir, input_sequence, _alignment_index)
 
-        return {**pdb_feats, **template_features, **msa_features}
+        SeqEmb_idx = (os.path.basename(pdb_path)).split('.')[0]
+        SeqEmb_filepath = glob.glob(os.path.join(self.SeqEmb_path, SeqEmb_idx+"*"))[0]
+        SeqEmb = np.load(SeqEmb_filepath)['esm1b'].astype(np.float32)
+        SeqEmb_dict = {'SeqEmb':SeqEmb}
+
+        return {**pdb_feats, **template_features, **msa_features, **SeqEmb_dict}
 
     def process_core(
         self,

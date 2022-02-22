@@ -26,7 +26,8 @@ from openfold.data.data_modules import (
     OpenFoldDataModule,
     DummyDataLoader,
 )
-from openfold.model.model import AlphaFold
+from openfold.model.model_adapter import AlphaFold_adapter as AlphaFold
+# from openfold.model.model import AlphaFold
 from openfold.model.torchscript import script_preset_
 from openfold.np import residue_constants
 from openfold.utils.callbacks import (

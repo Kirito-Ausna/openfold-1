@@ -13,7 +13,7 @@ python3 train_openfold.py $train_dir $alignment_dir $template_mmcif_dir $output_
     --seed 36\
     --deepspeed_config_path ./deepspeed_config.json\
     --max_epochs 10\
-    --wandb\
+    # --wandb\
     --experiment_name Test1\
     --wandb_id kirito_asuna\
     --wandb_project Manifold_Exp4\
