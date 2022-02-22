@@ -1,0 +1,25 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": ["/usr/commondata/local_public/rep/train/pdb", 
+                "/usr/commondata/local_public/rep/train/a3m", 
+                "/usr/commondata/public/CASP14_Datasets/datasets/pdb_mmcif/mmcif_files", 
+                "./output_dir",
+                "2021-10-10",
+                "--precision", "bf16",
+                "--gpus", "1",
+                "--replace_sampler_ddp", "True",
+                "--seed", "36",
+                "--deepspeed_config_path", "./deepspeed_config.json"]
+        }
+    ]
+}

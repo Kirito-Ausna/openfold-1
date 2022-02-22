@@ -103,6 +103,11 @@ eps = mlc.FieldReference(1e-8, field_type=float)
 templates_enabled = mlc.FieldReference(True, field_type=bool)
 embed_template_torsion_angles = mlc.FieldReference(True, field_type=bool)
 
+c_InEmb = mlc.FieldReference(1280, field_type=int)
+c_AdaEmb = mlc.FieldReference(384, field_type=int)
+c_AdaSeqEmb = mlc.FieldReference(384, field_type=int)
+c_AdaStrEmb = mlc.FieldReference(128, field_type=int)
+
 NUM_RES = "num residues placeholder"
 NUM_MSA_SEQ = "msa placeholder"
 NUM_EXTRA_SEQ = "extra msa placeholder"
@@ -113,6 +118,7 @@ config = mlc.ConfigDict(
         "data": {
             "common": {
                 "feat": {
+                    "SeqEmb": [NUM_RES, None],
                     "aatype": [NUM_RES],
                     "all_atom_mask": [NUM_RES, None],
                     "all_atom_positions": [NUM_RES, None, None],
@@ -195,6 +201,7 @@ config = mlc.ConfigDict(
                     "template_all_atom_mask",
                 ],
                 "unsupervised_features": [
+                    "SeqEmb",
                     "aatype",
                     "residue_index",
                     "msa",
@@ -394,6 +401,12 @@ config = mlc.ConfigDict(
                 "trans_scale_factor": 10,
                 "epsilon": eps,  # 1e-12,
                 "inf": 1e5,
+            },
+            "adapter": {
+                "c_s": c_s,
+                "c_z": c_z,
+                "c_InEmb": c_InEmb,
+                "c_AdaEmb": c_AdaEmb,
             },
             "heads": {
                 "lddt": {
