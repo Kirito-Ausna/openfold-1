@@ -242,6 +242,17 @@ def main(args):
     if(args.seed is not None):
         seed_everything(args.seed) 
 
+    loggers = []
+    if(args.wandb):
+        wdb_logger = WandbLogger(
+            name=args.experiment_name,
+            save_dir=args.output_dir,
+            id=args.wandb_id,
+            project=args.wandb_project,
+            **{"entity": args.wandb_entity}
+        )
+        loggers.append(wdb_logger)
+        
     config = model_config(
         args.config_preset, 
         train=True, 
@@ -301,16 +312,6 @@ def main(args):
         lr_monitor = LearningRateMonitor(logging_interval="step")
         callbacks.append(lr_monitor)
 
-    loggers = []
-    if(args.wandb):
-        wdb_logger = WandbLogger(
-            name=args.experiment_name,
-            save_dir=args.output_dir,
-            id=args.wandb_id,
-            project=args.wandb_project,
-            **{"entity": args.wandb_entity}
-        )
-        loggers.append(wdb_logger)
 
     if(args.deepspeed_config_path is not None):
         if "SLURM_JOB_ID" in os.environ:
